@@ -22,32 +22,38 @@ npm install delta-sync
 
 ```
 
-## Usage
+## Basic Usage
 
 ```typescript
-import { SyncManager } from 'delta-sync/core/syncManager';
-import { LocalCoordinator } from 'delta-sync/core/LocalCoordinator';
-import { CloudCoordinator } from 'delta-sync/core/CloudCoordinator';
+import { SyncClient } from 'delta-sync/core/SyncClient';
 import { IndexedDBAdapter } from 'delta-sync/adapters/indexeddb';
 import { RestAdapter } from 'delta-sync/adapters/rest';
 
-// Initialize local data adapter
+// Initialize local adapter
 const localAdapter = new IndexedDBAdapter('myApp');
 
-// Initialize cloud data adapter
+// Create sync client
+const syncClient = new SyncClient({
+  localAdapter: localAdapter
+});
+
+// Connect to cloud
 const cloudAdapter = new RestAdapter({
   baseUrl: 'https://api.example.com/sync',
   headers: { 'Authorization': 'Bearer token' }
 });
 
-// Create coordinators
-const localCoordinator = new LocalCoordinator(localAdapter);
-const cloudCoordinator = new CloudCoordinator(cloudAdapter);
+await syncClient.setCloudAdapter(cloudAdapter);
 
-// Create sync manager
-const syncManager = new SyncManager(localCoordinator, cloudCoordinator);
-// Initialize sync service
-await syncManager.initialize();
+// Save data locally
+await syncClient.save('notes', {
+  _delta_id: 'note1',
+  title: 'My first note',
+  content: 'Hello world'
+});
+
+// Synchronize with the cloud
+await syncClient.sync();
 ```
 
 
