@@ -1,5 +1,7 @@
 # DeltaSync
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 An ultra-lightweight bidirectional synchronization framework based on CRDT principles, supporting multi-device synchronization of document-based data and attachments.
 
 ## Features
