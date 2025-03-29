@@ -1,4 +1,4 @@
-# DeltaSync[alpha version]
+# DeltaSync[alpha]
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
