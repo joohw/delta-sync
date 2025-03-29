@@ -1,5 +1,5 @@
 // core/SyncClient.ts
-// 提供简单易用的同步客户端API，封装内部同步复杂性
+// Provides a simple and easy-to-use synchronization client API, encapsulating internal synchronization complexity
 
 import {
     BaseModel,
@@ -16,43 +16,43 @@ import { EncryptionConfig } from './SyncConfig';
 import { SyncConfig, getSyncConfig } from './SyncConfig';
 import { testAdapterFunctionality } from '../tester/FunctionTester';
 
-// 同步状态枚举
+// Synchronization status enumeration
 export enum SyncStatus {
-    Error = -2,        // 错误或离线状态
-    Offline = -1,      // 错误或离线状态
-    Idle = 0,          // 空闲状态
-    Uploading = 1,     // 上传同步中
-    Downloading = 2,   // 下载同步中
-    Operating = 3,     // 操作中(清空笔记等特殊操作)
-    Maintaining = 4,   // 维护中(清理旧数据，优化存储)
+    Error = -2,        // Error or offline status
+    Offline = -1,      // Error or offline status
+    Idle = 0,          // Idle status
+    Uploading = 1,     // Upload synchronization in progress
+    Downloading = 2,   // Download synchronization in progress
+    Operating = 3,     // Operation in progress (clearing notes and other special operations)
+    Maintaining = 4,   // Maintenance in progress (cleaning old data, optimizing storage)
 }
 
-// 同步客户端选项
+// Sync client options
 export interface SyncClientOptions {
     localAdapter: DatabaseAdapter;
     encryptionConfig?: EncryptionConfig;
-    syncConfig?: Partial<SyncConfig>;  // 新增：同步配置
-    onStatus?: (status: SyncStatus) => void;  // 状态变化回调
-    onDataPull?: (changes: DataChange[]) => void;  // 数据拉取回调
+    syncConfig?: Partial<SyncConfig>;  // New: synchronization configuration
+    onStatus?: (status: SyncStatus) => void;  // Status change callback
+    onDataPull?: (changes: DataChange[]) => void;  // Data pull callback
 }
 
-// 同步状态信息
+// Synchronization status information
 export interface ClientStatus {
-    currentVersion: number;     // 当前数据版本号
-    pendingChanges: number;     // 待同步的变更数量
-    cloudConfigured: boolean;   // 是否已配置云端
-    syncStatus: SyncStatus;     // 当前同步状态
+    currentVersion: number;     // Current data version number
+    pendingChanges: number;     // Number of pending changes to be synchronized
+    cloudConfigured: boolean;   // Whether cloud is configured
+    syncStatus: SyncStatus;     // Current synchronization status
 }
 
-// 查询选项
+// Query options
 export interface QueryOptions {
-    ids?: string[];    // 要查询的特定ID
-    limit?: number;    // 查询结果限制
-    offset?: number;   // 查询结果偏移量
-    since?: number;    // 查询版本号范围（大于该版本号）
+    ids?: string[];    // Specific IDs to query
+    limit?: number;    // Query result limit
+    offset?: number;   // Query result offset
+    since?: number;    // Query version range (greater than this version number)
 }
 
-// 同步客户端，提供简单易用的API来管理本地数据和同步操作
+// Sync client, providing a simple and easy-to-use API to manage local data and synchronization operations
 export class SyncClient {
     private localAdapter: DatabaseAdapter;
     private localCoordinator: LocalCoordinator;
@@ -63,7 +63,7 @@ export class SyncClient {
     private onStatusCallback?: (status: SyncStatus) => void;
     private onDataPullCallback?: (changes: DataChange[]) => void;
 
-    // 创建同步客户端
+    // Create sync client
     constructor(options: SyncClientOptions) {
         this.localAdapter = options.localAdapter;
         this.localCoordinator = new LocalCoordinator(
@@ -72,37 +72,37 @@ export class SyncClient {
         );
         this.onStatusCallback = options.onStatus;
         this.onDataPullCallback = options.onDataPull;
-        // 初始化同步配置
+        // Initialize sync configuration
         this.config = getSyncConfig(options.syncConfig);
-        // 自动初始化本地协调器
+        // Automatically initialize local coordinator
         this.initialize();
     }
 
-    // 设置状态变化回调
+    // Set status change callback
     setStatusCallback(callback: (status: SyncStatus) => void): void {
         this.onStatusCallback = callback;
     }
 
-    // 设置数据拉取回调
+    // Set data pull callback
     setDataPullCallback(callback: (changes: DataChange[]) => void): void {
         this.onDataPullCallback = callback;
     }
 
-    // 更新同步配置
+    // Update sync configuration
     updateSyncConfig(config: Partial<SyncConfig>): void {
         this.config = {
             ...this.config,
             ...config
         };
-        console.log("同步配置已更新:", this.config);
+        console.log("Sync configuration updated:", this.config);
     }
 
-    // 获取当前同步配置
+    // Get current sync configuration
     getSyncConfig(): SyncConfig {
         return { ...this.config };
     }
 
-    // 设置云端适配器，启用同步功能
+    // Set cloud adapter, enable synchronization functionality
     async setCloudAdapter(cloudAdapter: DatabaseAdapter): Promise<void> {
         this.cloudCoordinator = new CloudCoordinator(cloudAdapter);
         try {
@@ -113,29 +113,29 @@ export class SyncClient {
                 this.cloudCoordinator
             );
             this.updateSyncStatus(SyncStatus.Idle);
-            console.log("云端适配器已连接，同步就绪");
+            console.log("Cloud adapter connected, synchronization ready");
         } catch (error) {
             this.updateSyncStatus(SyncStatus.Error);
-            console.error("云端适配器初始化失败:", error);
+            console.error("Cloud adapter initialization failed:", error);
             this.cloudCoordinator = undefined;
             throw error;
         }
     }
 
-    // 断开云端连接，回到本地模式
+    // Disconnect cloud connection, return to local mode
     disconnectCloud(): void {
         this.cloudCoordinator = undefined;
         this.syncManager = undefined;
         this.updateSyncStatus(SyncStatus.Offline);
-        console.log("已断开云端连接，现在处于本地模式");
+        console.log("Cloud connection disconnected, now in local mode");
     }
 
-    // 获取当前同步状态枚举值
+    // Get current sync status enumeration value
     getCurrentSyncStatus(): SyncStatus {
         return this.currentSyncStatus;
     }
 
-    // 更新同步状态并触发回调
+    // Update sync status and trigger callback
     private updateSyncStatus(status: SyncStatus): void {
         this.currentSyncStatus = status;
         if (this.onStatusCallback) {
@@ -143,21 +143,21 @@ export class SyncClient {
         }
     }
 
-    // 初始化本地协调器
+    // Initialize local coordinator
     private async initialize(): Promise<void> {
         try {
             this.updateSyncStatus(SyncStatus.Operating);
             await this.localCoordinator.initialize();
             this.updateSyncStatus(SyncStatus.Idle);
-            console.log("本地存储初始化成功");
+            console.log("Local storage initialization successful");
         } catch (error) {
             this.updateSyncStatus(SyncStatus.Error);
-            console.error("本地存储初始化失败:", error);
+            console.error("Local storage initialization failed:", error);
             throw error;
         }
     }
 
-    // 查询数据
+    // Query data
     async query<T extends BaseModel>(storeName: string, options?: QueryOptions): Promise<T[]> {
         if (options?.ids && options.ids.length > 0) {
             return await this.localAdapter.readBulk<T>(storeName, options.ids);
@@ -165,25 +165,25 @@ export class SyncClient {
             const result = await this.localAdapter.read<T>(storeName, {
                 limit: options?.limit,
                 offset: options?.offset,
-                since: options?.since // 现在表示版本号大于该值
+                since: options?.since // Now represents version number greater than this value
             });
             return result.items;
         }
     }
 
-    // 保存数据到指定存储
+    // Save data to specified storage
     async save<T extends BaseModel>(storeName: string, data: T | T[]): Promise<T[]> {
         const items = Array.isArray(data) ? data : [data];
         return await this.localCoordinator.putBulk(storeName, items);
     }
 
-    // 从指定存储删除数据
+    // Delete data from specified storage
     async delete(storeName: string, ids: string | string[]): Promise<void> {
         const itemIds = Array.isArray(ids) ? ids : [ids];
         await this.localCoordinator.deleteBulk(storeName, itemIds);
     }
 
-    // 执行双向同步操作
+    // Perform bidirectional synchronization operation
     async sync(): Promise<boolean> {
         if (!this.syncManager) {
             return false;
@@ -199,17 +199,17 @@ export class SyncClient {
         }
     }
 
-    // 仅推送本地变更到云端
+    // Only push local changes to cloud
     async push(): Promise<SyncResponse> {
         if (!this.syncManager) {
             return {
                 success: false,
-                error: "未配置云端同步源，请先调用 setCloudAdapter"
+                error: "Cloud sync source not configured, please call setCloudAdapter first"
             };
         }
         try {
             this.currentSyncStatus = SyncStatus.Uploading;
-            // 使用配置中的批处理大小
+            // Use batch size from configuration
             const result = await this.syncManager.pushChanges(this.config.batchSize);
             this.currentSyncStatus = result.success ? SyncStatus.Idle : SyncStatus.Error;
             return result;
@@ -219,19 +219,19 @@ export class SyncClient {
         }
     }
 
-    // 仅从云端拉取变更
+    // Only pull changes from cloud
     async pull(): Promise<SyncResponse> {
         if (!this.syncManager) {
             return {
                 success: false,
-                error: "未配置云端同步源，请先调用 setCloudAdapter"
+                error: "Cloud sync source not configured, please call setCloudAdapter first"
             };
         }
         try {
             this.updateSyncStatus(SyncStatus.Downloading);
             const result = await this.syncManager.pullChanges();
             this.updateSyncStatus(result.success ? SyncStatus.Idle : SyncStatus.Error);
-            // 如果拉取成功且有数据拉取回调和变更数据，通知新数据
+            // If pull is successful and there is a data pull callback and change data, notify of new data
             if (result.success && this.onDataPullCallback && result.changes && result.changes.length > 0) {
                 this.onDataPullCallback(result.changes);
             }
@@ -243,7 +243,7 @@ export class SyncClient {
     }
 
 
-    // 获取当前同步状态
+    // Get current sync status
     async getClientStatus(): Promise<ClientStatus> {
         const currentVersion = await this.localCoordinator.getCurrentVersion();
         const pendingChanges = await this.localCoordinator.getPendingChanges(0);
@@ -256,29 +256,29 @@ export class SyncClient {
     }
 
 
-    // 保存文件附件
+    // Save file attachments
     async saveFiles(files: FileItem[]): Promise<Attachment[]> {
         return await this.localAdapter.saveFiles(files);
     }
 
 
-    // 读取文件附件
+    // Read file attachments
     async readFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>> {
         return await this.localAdapter.readFiles(fileIds);
     }
 
-    // 删除文件附件
+    // Delete file attachments
     async deleteFiles(fileIds: string[]): Promise<{ deleted: string[], failed: string[] }> {
         return await this.localAdapter.deleteFiles(fileIds);
     }
 
 
-    // 访问底层的协调层
+    // Access underlying coordination layer
     getlocalCoordinator(): LocalCoordinator {
         return this.localCoordinator;
     }
 
-    // 访问底层的本地存储适配器
+    // Access underlying local storage adapter
     getlocalAdapter(): DatabaseAdapter {
         return this.localAdapter;
     }
@@ -287,15 +287,15 @@ export class SyncClient {
         testAdapterFunctionality(this.localAdapter, "local_adapater_test");
     }
 
-    // 执行维护操作，清理旧数据
+    // Perform maintenance operations, clean up old data
     async maintenance(
         cloudOlderThan: number = 30 * 24 * 60 * 60 * 1000
     ): Promise<void> {
         try {
             this.updateSyncStatus(SyncStatus.Maintaining);
-            // 本地维护
+            // Local maintenance
             await this.localCoordinator.performMaintenance();
-            // 云端维护（如果已配置）
+            // Cloud maintenance (if configured)
             if (this.cloudCoordinator) {
                 await this.cloudCoordinator.performMaintenance(cloudOlderThan);
             }
