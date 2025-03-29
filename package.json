@@ -1,0 +1,67 @@
+{
+  "name": "delta-sync",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./adapters/indexeddb": {
+      "import": "./dist/adapters/indexeddb.js",
+      "types": "./dist/adapters/indexeddb.d.ts"
+    },
+    "./adapters/memory": {
+      "import": "./dist/adapters/memory.js",
+      "types": "./dist/adapters/memory.d.ts"
+    },
+    "./core/*": {
+      "import": "./dist/core/*.js",
+      "types": "./dist/core/*.d.ts"
+    }
+  },
+  "files": [
+    "dist/**/*",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rimraf dist",
+    "prepublish": "npm run clean && npm run build",
+    "test": "tsx test/index.ts"
+  },
+  "keywords": [
+    "database",
+    "sync",
+    "offline-first",
+    "delta-sync",
+    "crdt",
+    "conflict-free",
+    "replication",
+    "real-time",
+    "distributed",
+    "typescript",
+    "indexeddb",
+    "file-sync",
+    "versioning"
+  ],
+  "author": "joo hwang",
+  "license": "ISC",
+  "description": "A lightweight framework for bi-directional database synchronization with automatic version tracking and conflict resolution.",
+  "devDependencies": {
+    "@types/crypto-js": "^4.2.2",
+    "@types/node": "^22.13.10",
+    "http-server": "^14.1.1",
+    "rimraf": "^5.0.5",
+    "tsx": "^4.19.3",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "crypto-js": "^4.2.0",
+    "uuid": "^11.1.0"
+  }
+}
