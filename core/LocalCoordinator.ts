@@ -5,7 +5,7 @@
 import {
   BaseModel,
   DatabaseAdapter,
-  DataChange, getSyncId, getOriginalId,
+  DataChange, getChangeId, getOriginalId,
   SyncOperationType, FileItem,
   Attachment, LocalChangeRecord
 } from './types';
@@ -308,7 +308,7 @@ export class LocalCoordinator {
     operationType: SyncOperationType,
     skipVersionIncrement: boolean = false
   ): Promise<void> {
-    const syncId = getSyncId(storeName, data._delta_id);
+    const syncId = getChangeId(storeName, data._delta_id);
     const version = skipVersionIncrement && data._version ?
       data._version :
       await this.nextVersion();
@@ -434,6 +434,8 @@ export class LocalCoordinator {
     }
     return result;
   }
+
+
 
   // 获取单个附件内容
   async getAttachmentContent<T extends BaseModel>(

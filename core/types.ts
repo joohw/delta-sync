@@ -108,7 +108,7 @@ export interface SyncResponse {
 
 
 // 获取用于存储到change表中的名称
-export function getSyncId(storeName: string, deltaId: string): string {
+export function getChangeId(storeName: string, deltaId: string): string {
     return `${storeName}_${deltaId}`;
 }
 
