@@ -7,7 +7,8 @@ import {
     SyncResponse,
     Attachment,
     FileItem,
-    DataChange
+    DataChange,
+    QueryOptions
 } from './types';
 import { LocalCoordinator } from './LocalCoordinator';
 import { CloudCoordinator } from './CloudCoordinator';
@@ -44,14 +45,6 @@ export interface ClientStatus {
     syncStatus: SyncStatus;     // Current synchronization status
 }
 
-// Query options
-export interface QueryOptions {
-    ids?: string[];    // Specific IDs to query
-    limit?: number;    // Query result limit
-    offset?: number;   // Query result offset
-    since?: number;    // Query version range (greater than this version number)
-    sort?: string;     // Sort order (e.g. "name:asc")
-}
 
 // Sync client, providing a simple and easy-to-use API to manage local data and synchronization operations
 export class SyncClient {
@@ -161,26 +154,17 @@ export class SyncClient {
     // Query data
     async query<T extends BaseModel>(storeName: string, options?: QueryOptions): Promise<T[]> {
         try {
-            if (options?.ids && options.ids.length > 0) {
-                return await this.localAdapter.readBulk<T>(storeName, options.ids);
-            } else {
-                // 否则使用 readByVersion 并正确传递参数
-                const result = await this.localAdapter.readByVersion<T>(
-                    storeName, {
-                    limit: options?.limit,
-                    offset: options?.offset,
-                    since: options?.since,
-                    order: options?.sort?.includes(':desc') ? 'desc' : 'asc' // 正确处理排序选项
-                });
-                return result.items;
-            }
+            const result = await this.localAdapter.readByVersion<T>(
+                storeName, options);
+            console.log("查询数据成功: ", storeName, options, result.items);
+            return result.items;
         } catch (error) {
             console.error(`查询数据失败: ${storeName}`, error);
             throw new Error(`查询 ${storeName} 数据失败: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
 
-    
+
     // Save data to specified storage
     async save<T extends BaseModel>(storeName: string, data: T | T[]): Promise<T[]> {
         const items = Array.isArray(data) ? data : [data];
@@ -299,16 +283,10 @@ export class SyncClient {
 
     // Perform maintenance operations, clean up old data
     async maintenance(
-        cloudOlderThan: number = 30 * 24 * 60 * 60 * 1000
     ): Promise<void> {
         try {
             this.updateSyncStatus(SyncStatus.Maintaining);
-            // Local maintenance
             await this.localCoordinator.performMaintenance();
-            // Cloud maintenance (if configured)
-            if (this.cloudCoordinator) {
-                await this.cloudCoordinator.performMaintenance(cloudOlderThan);
-            }
             this.updateSyncStatus(SyncStatus.Idle);
         } catch (error) {
             this.updateSyncStatus(SyncStatus.Error);

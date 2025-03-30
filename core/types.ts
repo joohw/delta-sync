@@ -43,16 +43,19 @@ export interface MetaItem extends Omit<BaseModel, '_store'> {
 }
 
 
+export interface QueryOptions {
+    since?: number;
+    offset?: number;
+    limit?: number;
+    order?: 'asc' | 'desc';
+}
+
+
 // 数据库适配器,支持任意类型的数据库
 export interface DatabaseAdapter {
     initSync(): Promise<void>;
     isAvailable(): Promise<boolean>;
-    readByVersion<T extends BaseModel>(storeName: string, options: {
-        since?: number;
-        offset?: number;
-        limit?: number;
-        order?: 'asc' | 'desc';
-    }): Promise<{ items: T[]; hasMore: boolean }>;
+    readByVersion<T extends BaseModel>(storeName: string, options?: QueryOptions): Promise<{ items: T[]; hasMore: boolean }>;
     readBulk<T extends BaseModel>(storeName: string, ids: string[]): Promise<T[]>;
     putBulk<T extends BaseModel>(storeName: string, items: T[]): Promise<T[]>;
     deleteBulk(storeName: string, ids: string[]): Promise<void>;

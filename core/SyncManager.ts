@@ -294,13 +294,6 @@ export class SyncManager {
   }
 
 
-  // 执行数据库维护操作
-  async performMaintenance(): Promise<void> {
-    await this.localCoordinator.performMaintenance();
-    await this.cloudCoordinator.performMaintenance();
-  }
-
-
   // 标记失败的附件
   private markAttachmentsAsMissing(
     attachmentItems: { changeIndex: number, attachmentIndex: number, id: string }[],

@@ -1,12 +1,13 @@
 // adapters/indexeddb.ts
 // 基于indexeddb的适配器
 
-import { DatabaseAdapter, Attachment, BaseModel, FileItem } from '../core/types';
+import { DatabaseAdapter, Attachment, BaseModel, FileItem, QueryOptions } from '../core/types';
 
 interface IndexedDBAdapterOptions {
     dbName?: string;
     fileStoreName?: string;
 }
+
 
 export class IndexedDBAdapter implements DatabaseAdapter {
     private db: IDBDatabase | null = null;
@@ -20,31 +21,52 @@ export class IndexedDBAdapter implements DatabaseAdapter {
         this.fileStoreName = options.fileStoreName || '_files'; // 默认文件存储名称
     }
 
+
     async isAvailable(): Promise<boolean> {
         return !!window.indexedDB;
     }
 
+
     async initSync(): Promise<void> {
         if (this.db) return;
         if (this.initPromise) return this.initPromise;
+        const currentVersion = await this.getCurrentDatabaseVersion();
         this.initPromise = new Promise((resolve, reject) => {
             try {
-                const request = indexedDB.open(this.dbName);
+                // 使用当前版本打开
+                const request = indexedDB.open(this.dbName, currentVersion);
+                request.onupgradeneeded = (event) => {
+                    const db = request.result;
+                    this.createRequiredStores(db, event.oldVersion);
+                };
                 request.onerror = () => {
                     reject(new Error(`Failed to open IndexedDB database: ${request.error?.message || 'Unknown error'}`));
                 };
                 request.onsuccess = () => {
                     this.db = request.result;
-                    this.db.onversionchange = () => {
-                        console.warn('Database version changed. Closing connection.');
-                        this.db?.close();
-                        this.db = null;
-                        this.initPromise = null;
-                    };
-                    for (let i = 0; i < this.db.objectStoreNames.length; i++) {
-                        this.stores.add(this.db.objectStoreNames[i]);
+                    // 检查是否需要升级以创建新存储
+                    if (!this.db.objectStoreNames.contains(this.fileStoreName) ||
+                        !this.db.objectStoreNames.contains('local_changes')) {
+                        // 需要升级，关闭连接并重新打开
+                        const newVersion = currentVersion + 1;
+                        this.db.close();
+                        const upgradeRequest = indexedDB.open(this.dbName, newVersion);
+                        upgradeRequest.onupgradeneeded = (event) => {
+                            const db = upgradeRequest.result;
+                            this.createRequiredStores(db, event.oldVersion);
+                        };
+                        upgradeRequest.onerror = () => {
+                            reject(new Error(`Failed to upgrade IndexedDB database: ${upgradeRequest.error?.message || 'Unknown error'}`));
+                        };
+                        upgradeRequest.onsuccess = () => {
+                            this.db = upgradeRequest.result;
+                            this.setupDbConnection();
+                            resolve();
+                        };
+                    } else {
+                        this.setupDbConnection();
+                        resolve();
                     }
-                    resolve();
                 };
             } catch (error) {
                 reject(new Error(`Failed to initialize IndexedDB: ${error instanceof Error ? error.message : String(error)}`));
@@ -54,50 +76,60 @@ export class IndexedDBAdapter implements DatabaseAdapter {
     }
 
 
+    // 获取当前数据库版本
+    private async getCurrentDatabaseVersion(): Promise<number> {
+        return new Promise((resolve) => {
+            const request = indexedDB.open(this.dbName);
+            request.onsuccess = () => {
+                const version = request.result.version;
+                request.result.close();
+                resolve(version);
+            };
+            request.onerror = () => {
+                // 如果数据库不存在，返回版本1
+                resolve(1);
+            };
+        });
+    }
+
+
+    // 设置数据库连接
+    private setupDbConnection(): void {
+        this.db!.onversionchange = () => {
+            console.warn('Database version changed. Closing connection.');
+            this.db?.close();
+            this.db = null;
+            this.initPromise = null;
+        };
+        this.stores.clear();
+        for (let i = 0; i < this.db!.objectStoreNames.length; i++) {
+            this.stores.add(this.db!.objectStoreNames[i]);
+        }
+    }
+
+
+    // 创建必要的存储
+    private createRequiredStores(db: IDBDatabase, oldVersion: number): void {
+        // 创建文件存储
+        if (!db.objectStoreNames.contains(this.fileStoreName)) {
+            const fileStore = db.createObjectStore(this.fileStoreName, { keyPath: '_delta_id' });
+            fileStore.createIndex('createdAt', 'createdAt', { unique: false });
+            fileStore.createIndex('updatedAt', 'updatedAt', { unique: false });
+        }
+        // 创建变更记录存储
+        if (!db.objectStoreNames.contains('local_changes')) {
+            const changesStore = db.createObjectStore('local_changes', { keyPath: '_delta_id' });
+            changesStore.createIndex('_version', '_version', { unique: false });
+        }
+    }
+
+
     private async ensureStore(storeName: string): Promise<void> {
         if (!this.db) {
             await this.initSync();
         }
-        // 如果存储已经存在，直接返回
         if (this.stores.has(storeName)) {
             return;
-        }
-        if (!this.db!.objectStoreNames.contains(storeName)) {
-            const currentVersion = this.db!.version;
-            this.db!.close();
-            this.db = null;
-            this.initPromise = null;
-            // 创建新连接并升级
-            return new Promise<void>((resolve, reject) => {
-                const request = indexedDB.open(this.dbName, currentVersion + 1);
-                request.onerror = (event) => {
-                    reject(new Error(`Failed to upgrade database for store: ${storeName}`));
-                };
-                request.onupgradeneeded = (event) => {
-                    const db = request.result;
-                    try {
-                        const objectStore = db.createObjectStore(storeName, { keyPath: '_delta_id' });
-                        objectStore.createIndex('_version', '_version', { unique: false });
-                    } catch (error) {
-                        console.error('Error creating store:', error);
-                        request.transaction?.abort();
-                        reject(error);
-                    }
-                };
-                request.onsuccess = () => {
-                    this.db = request.result;
-                    this.stores.add(storeName);
-                    this.db.onversionchange = () => {
-                        this.db?.close();
-                        this.db = null;
-                        this.initPromise = null;
-                        console.log('Database version changed by another connection');
-                    };
-                    resolve();
-                };
-            });
-        } else {
-            this.stores.add(storeName);
         }
     }
 
@@ -105,12 +137,7 @@ export class IndexedDBAdapter implements DatabaseAdapter {
     // 读取指定版本之后的所有数据
     async readByVersion<T extends BaseModel>(
         storeName: string,
-        options: {
-            limit?: number;
-            offset?: number;
-            since?: number;
-            order?: 'asc' | 'desc';
-        } = {}
+        options: QueryOptions,
     ): Promise<{ items: T[]; hasMore: boolean }> {
         await this.ensureStore(storeName);
         const limit = options.limit || Number.MAX_SAFE_INTEGER;
@@ -118,42 +145,23 @@ export class IndexedDBAdapter implements DatabaseAdapter {
         const since = options.since || 0;
         const order = options.order || 'asc';
         return new Promise<{ items: T[]; hasMore: boolean }>((resolve, reject) => {
-            const transaction = this.db!.transaction(storeName, 'readonly');
-            const store = transaction.objectStore(storeName);
-            const items: T[] = [];
-            let skipped = 0;
-            let processed = 0;
-            let hasMore = false;
             try {
-                // 获取索引
+                const transaction = this.db!.transaction(storeName, 'readonly');
+                const store = transaction.objectStore(storeName);
                 const versionIndex = store.index('_version');
+                const items: T[] = [];
+                let skipped = 0;
+                let processed = 0;
+                let hasMore = false;
                 let request: IDBRequest;
-                // 根据排序顺序和是否有since参数决定如何打开游标
+                // 根据排序顺序和since参数决定游标打开方式
                 if (order === 'desc') {
-                    // 降序排列 - 从大到小
-                    if (since > 0) {
-                        // 如果指定了since，使用上界
-                        const range = IDBKeyRange.upperBound(since, true);
-                        request = versionIndex.openCursor(range, 'prev');
-                    } else {
-                        // 否则从最大值开始
-                        request = versionIndex.openCursor(null, 'prev');
-                    }
+                    const range = since > 0 ? IDBKeyRange.upperBound(since, true) : null;
+                    request = versionIndex.openCursor(range, 'prev');
                 } else {
-                    // 升序排列 - 从小到大
-                    if (since > 0) {
-                        // 如果指定了since，使用下界
-                        const range = IDBKeyRange.lowerBound(since, true);
-                        request = versionIndex.openCursor(range);
-                    } else {
-                        // 否则从最小值开始
-                        request = versionIndex.openCursor();
-                    }
+                    const range = since > 0 ? IDBKeyRange.lowerBound(since, true) : null;
+                    request = versionIndex.openCursor(range);
                 }
-                request.onerror = (event) => {
-                    console.error(`索引查询失败: ${(event.target as IDBRequest).error}`);
-                    this.fallbackReadByVersion(store, since, offset, limit, order, resolve, reject);
-                };
                 request.onsuccess = (event) => {
                     const cursor = (event.target as IDBRequest).result as IDBCursorWithValue;
                     if (cursor) {
@@ -172,9 +180,14 @@ export class IndexedDBAdapter implements DatabaseAdapter {
                         resolve({ items, hasMore });
                     }
                 };
+                request.onerror = (event) => {
+                    reject(new Error(`查询${storeName}时出错: ${(event.target as IDBRequest).error}`));
+                };
+                transaction.onerror = (event) => {
+                    reject(new Error(`事务执行出错: ${transaction.error}`));
+                };
             } catch (error) {
-                console.warn(`索引方法初始化失败，回退到标准方法: ${error}`);
-                this.fallbackReadByVersion(store, since, offset, limit, order, resolve, reject);
+                reject(new Error(`执行查询时发生错误: ${error instanceof Error ? error.message : String(error)}`));
             }
         });
     }

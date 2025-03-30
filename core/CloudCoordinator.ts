@@ -5,7 +5,7 @@ import {
     DatabaseAdapter,
     SyncResponse,
     DataChange,
-    Attachment, FileItem
+    Attachment,
 } from './types';
 
 
@@ -105,38 +105,6 @@ export class CloudCoordinator {
 
 
 
-    // 清理旧的数据
-    async performMaintenance(olderThan: number = 30 * 24 * 60 * 60 * 1000): Promise<void> {
-        const now = Date.now();
-        let offset = 0;
-        let hasMore = true;
-        const batchSize = 1000;
-        while (hasMore) {
-            const changesResult = await this.cloudAdapter.readByVersion<any>(this.CHANGES_STORE, {
-                offset: offset,
-                limit: batchSize
-            });
-            const changes = changesResult.items;
-            hasMore = changesResult.hasMore;
-            const oldChanges = changes.filter(
-                change => (now - change.server_timestamp) > olderThan
-            );
-            if (oldChanges.length > 0) {
-                await this.cloudAdapter.deleteBulk(
-                    this.CHANGES_STORE,
-                    oldChanges.map(change => change._delta_id)
-                );
-            }
-            if (changes.length < batchSize) {
-                hasMore = false;
-            } else {
-                offset += changes.length;
-            }
-        }
-    }
-
-
-
     // 处理附件更改,返回需要上传的附件列表，由syncManager处理上传
     async processAttachmentChanges(change: DataChange): Promise<{
         attachmentsToUpload: string[],  // 需要上传到云端的附件ID
@@ -168,7 +136,6 @@ export class CloudCoordinator {
                             // 批量删除附件
                             const deleteResult = await this.cloudAdapter.deleteFiles(attachmentIdsToDelete);
                             result.deletedAttachments = deleteResult.deleted;
-
                             // 记录删除失败的附件
                             if (deleteResult.failed.length > 0) {
                                 console.warn(`删除云端附件失败: ${deleteResult.failed.join(', ')}`);

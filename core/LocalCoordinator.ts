@@ -33,19 +33,22 @@ export class LocalCoordinator {
   async putBulk<T extends BaseModel>(
     storeName: string,
     items: T[],
-    skipVersionIncrement: boolean = false  // 是否跳过版本号自增，默认为false
+    skipTracking: boolean = false  // 是否跳过变更跟踪，默认为false
   ): Promise<T[]> {
+    const nextVersion = await this.nextVersion();
     const updatedItems = items.map(item => ({
       ...item,
+      _version: nextVersion // 添加版本号
     }));
     const result = await this.localAdapter.putBulk(storeName, updatedItems);
-    for (const item of updatedItems) {
-      await this.trackChange(
-        storeName,
-        item,
-        'put',
-        skipVersionIncrement,
-      );
+    if (!skipTracking) {
+      for (const item of updatedItems) {
+        await this.recordChange(
+          storeName,
+          item,
+          'put'
+        );
+      }
     }
     return result;
   }
@@ -55,35 +58,54 @@ export class LocalCoordinator {
   async deleteBulk(
     storeName: string,
     ids: string[],
-    skipVersionIncrement: boolean = false  // 是否跳过版本号自增，默认为false
+    skipTracking: boolean = false  // 是否跳过变更跟踪，默认为false
   ): Promise<void> {
-    const now = Date.now();
+    // 先读取要删除的数据
     const items = await this.localAdapter.readBulk<BaseModel>(storeName, ids);
+    // 执行删除操作
     await this.localAdapter.deleteBulk(storeName, ids);
-    for (const item of items) {
-      const deleteItem = {
-        _delta_id: item._delta_id,
-        _version: item._version // 保留原始版本号，以便传递给trackChange
-      };
-      await this.trackChange(
-        storeName,
-        deleteItem,
-        'delete',
-        skipVersionIncrement, // 正确传递是否跳过版本号递增的参数
-      );
+    // 是否需要跟踪变更
+    if (!skipTracking) {
+      for (const item of items) {
+        await this.recordChange(
+          storeName,
+          {
+            _delta_id: item._delta_id,
+            _version: item._version
+          },
+          'delete'
+        );
+      }
     }
   }
 
 
-  // 从云端同步数据（使用现有版本号）
+  // 记录变更的新方法
+  private async recordChange<T extends BaseModel>(
+    storeName: string,
+    data: T,
+    operationType: SyncOperationType
+  ): Promise<void> {
+    const syncId = getChangeId(storeName, data._delta_id);
+    const version = await this.nextVersion();
+    const changeRecord: LocalChangeRecord = {
+      _delta_id: syncId,
+      _store: storeName,
+      _version: version,
+      type: operationType,
+      originalId: data._delta_id
+    };
+    console.log(`记录变更：storeName=${storeName}, id=${data._delta_id}, version=${version}, operation=${operationType}`);
+    await this.localAdapter.putBulk(this.LOCAL_CHANGES_STORE, [changeRecord]);
+  }
+
+
+
+  // 从云端同步数据
   async applyRemoteChange<T extends BaseModel>(changes: DataChange<T>[]): Promise<void> {
-    let maxVersion = 0;
+    // 批量写入本地变更表
     const changesByStore = new Map<string, { puts: T[], deletes: string[] }>();
     for (const change of changes) {
-      // 获取最大版本号
-      if (change._version > maxVersion) {
-        maxVersion = change._version;
-      }
       if (!changesByStore.has(change._store)) {
         changesByStore.set(change._store, { puts: [], deletes: [] });
       }
@@ -91,23 +113,40 @@ export class LocalCoordinator {
       if (change.type === 'put' && change.data) {
         storeChanges.puts.push({
           ...change.data,
-          _version: change._version  // 确保版本号被保留
+          _version: change._version
         } as T);
       } else if (change.type === 'delete') {
         const originalId = getOriginalId(change._delta_id, change._store);
         storeChanges.deletes.push(originalId);
       }
     }
-    // 应用数据变更（使用现有版本号）
+    // 应用数据变更，直接使用适配器方法
     for (const [storeName, storeChanges] of changesByStore.entries()) {
       if (storeChanges.puts.length > 0) {
-        console.log(`写入数据到本地`);
-        await this.putBulk(storeName, storeChanges.puts, true);  // 跳过版本号自增
+        console.log(`直接写入远程数据到本地：${storeChanges.puts.length}条`);
+        await this.localAdapter.putBulk(storeName, storeChanges.puts);
       }
       if (storeChanges.deletes.length > 0) {
-        console.log(`删除数据到本地`);
-        await this.deleteBulk(storeName, storeChanges.deletes, true);  // 跳过版本号自增
+        console.log(`直接删除远程数据到本地：${storeChanges.deletes.length}条`);
+        await this.localAdapter.deleteBulk(storeName, storeChanges.deletes);
       }
+    }
+    // 批量写入本地变更表
+    const localChangeRecords: LocalChangeRecord[] = changes.map(change => {
+      const originalId = change.type === 'delete'
+        ? getOriginalId(change._delta_id, change._store)
+        : change.data?._delta_id || '';
+      return {
+        _delta_id: change._delta_id,
+        _store: change._store,
+        _version: change._version,
+        type: change.type,
+        originalId: originalId,
+      };
+    });
+    if (localChangeRecords.length > 0) {
+      console.log(`记录远程变更到本地变更表: ${localChangeRecords.length}条`);
+      await this.localAdapter.putBulk(this.LOCAL_CHANGES_STORE, localChangeRecords);
     }
   }
 
@@ -135,10 +174,8 @@ export class LocalCoordinator {
               _store: change._store,
               _version: change._version,
               type: change.type,
-              data: { ...items[0] } 
+              data: { ...items[0] }
             });
-          } else {
-            console.warn(`跳过变更记录: store=${change._store}, id=${change.originalId}`);
           }
         } else if (change.type === 'delete') {
           if (items.length === 0) {
@@ -148,8 +185,6 @@ export class LocalCoordinator {
               _version: change._version,
               type: change.type
             });
-          } else {
-            console.warn(`跳过变更记录: store=${change._store}, id=${change.originalId}`);
           }
         }
       } catch (error) {
