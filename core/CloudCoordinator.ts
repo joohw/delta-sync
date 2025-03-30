@@ -75,7 +75,7 @@ export class CloudCoordinator {
         try {
             // 获取云端当前最新版本号
             const latestVersion = await this.getLatestVersion();
-            const result = await this.cloudAdapter.read<DataChange>(this.CHANGES_STORE, {
+            const result = await this.cloudAdapter.readByVersion<DataChange>(this.CHANGES_STORE, {
                 since: lastSyncVersion // 表示版本号大于 lastSyncVersion
             });
             // 计算返回变更中的最大版本号
@@ -113,7 +113,7 @@ export class CloudCoordinator {
         let hasMore = true;
         const batchSize = 1000;
         while (hasMore) {
-            const changesResult = await this.cloudAdapter.read<any>(this.CHANGES_STORE, {
+            const changesResult = await this.cloudAdapter.readByVersion<any>(this.CHANGES_STORE, {
                 offset: offset,
                 limit: batchSize
             });
@@ -257,7 +257,7 @@ export class CloudCoordinator {
             let version = 0;
             const totalCount = await this.cloudAdapter.count(this.CHANGES_STORE);
             if (totalCount > 0) {
-                const result = await this.cloudAdapter.read<DataChange>(this.CHANGES_STORE, {
+                const result = await this.cloudAdapter.readByVersion<DataChange>(this.CHANGES_STORE, {
                     offset: totalCount - 1,
                     limit: 1
                 });

@@ -115,7 +115,7 @@ export class LocalCoordinator {
 
   // 获取待同步的变更记录  待修复
   async getPendingChanges(since: number, limit: number = 100): Promise<DataChange[]> {
-    const result = await this.localAdapter.read<LocalChangeRecord>(this.LOCAL_CHANGES_STORE, {
+    const result = await this.localAdapter.readByVersion<LocalChangeRecord>(this.LOCAL_CHANGES_STORE, {
       since: since,
       limit: limit,
     });
@@ -265,7 +265,7 @@ export class LocalCoordinator {
     const recordsToDelete: string[] = [];
     // 分批处理所有变更记录
     while (hasMore) {
-      const changesResult = await this.localAdapter.read<LocalChangeRecord>(
+      const changesResult = await this.localAdapter.readByVersion<LocalChangeRecord>(
         this.LOCAL_CHANGES_STORE,
         {
           offset: offset,
@@ -344,7 +344,7 @@ export class LocalCoordinator {
       if (totalCount === 0) {
         return 0;
       }
-      const result = await this.localAdapter.read<LocalChangeRecord>(this.LOCAL_CHANGES_STORE, {
+      const result = await this.localAdapter.readByVersion<LocalChangeRecord>(this.LOCAL_CHANGES_STORE, {
         offset: totalCount - 1,
         limit: 1
       });

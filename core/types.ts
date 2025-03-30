@@ -47,14 +47,12 @@ export interface MetaItem extends Omit<BaseModel, '_store'> {
 export interface DatabaseAdapter {
     initSync(): Promise<void>;
     isAvailable(): Promise<boolean>;
-    read<T extends BaseModel>(storeName: string, options?: {
-        limit?: number;
-        offset?: number;
+    readByVersion<T extends BaseModel>(storeName: string, options: {
         since?: number;
-    }): Promise<{
-        items: T[];
-        hasMore: boolean;
-    }>;
+        offset?: number;
+        limit?: number;
+        order?: 'asc' | 'desc';
+    }): Promise<{ items: T[]; hasMore: boolean }>;
     readBulk<T extends BaseModel>(storeName: string, ids: string[]): Promise<T[]>;
     putBulk<T extends BaseModel>(storeName: string, items: T[]): Promise<T[]>;
     deleteBulk(storeName: string, ids: string[]): Promise<void>;
