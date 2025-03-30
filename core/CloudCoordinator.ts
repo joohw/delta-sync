@@ -31,8 +31,7 @@ export class CloudCoordinator {
         try {
             // 获取云端当前最新版本号
             console.log('处理同步请求...', changes);
-            const latestVersionResponse = await this.getLatestVersion();
-            const cloudLatestVersion = latestVersionResponse.version || 0;
+            const latestVersion = await this.getLatestVersion();
             // 找出提交的变更中最大和最小的版本号
             let maxVersion = 0;
             let minVersion = Number.MAX_SAFE_INTEGER;
@@ -50,7 +49,7 @@ export class CloudCoordinator {
             }
             await this.cloudAdapter.putBulk(this.CHANGES_STORE, changes);
             console.log(`推送请求详情:
-                        - 云端原始版本: ${cloudLatestVersion}
+                        - 云端原始版本: ${latestVersion}
                         - 推送变更数量: ${changes.length}
                         - 变更版本范围: ${minVersion} 到 ${maxVersion}
                         - 云端更新后版本: ${maxVersion}`);
@@ -87,7 +86,7 @@ export class CloudCoordinator {
             }
             console.log(`拉取请求详情:
                         - 客户端请求版本: ${lastSyncVersion}
-                        - 云端最新版本: ${latestVersion.version || 0}
+                        - 云端最新版本: ${latestVersion}
                         - 返回变更数量: ${result.items.length}
                         - 返回变更版本范围: ${result.items.length > 0 ? `${Math.min(...result.items.map(c => c._version))} 到 ${maxChangeVersion}` : '无变更'}`);
             return {
@@ -251,7 +250,7 @@ export class CloudCoordinator {
 
 
     // 获取最新变更的版本号(Todo: 优化查询方式)
-    async getLatestVersion(): Promise<SyncResponse> {
+    async getLatestVersion(): Promise<number> {
         try {
             // 设置默认版本号
             let version = 0;
@@ -265,17 +264,10 @@ export class CloudCoordinator {
                     version = result.items[0]._version;
                 }
             }
-            console.log(`获取最新版本号成功: ${version} (共有${totalCount || 0}条记录)`);
-            return {
-                success: true,
-                version
-            };
+            return version;
         } catch (error) {
             console.error('获取最新版本号失败:', error);
-            return {
-                success: false,
-                error: this.getErrorMessage(error)
-            };
+            return 0;
         }
     }
 

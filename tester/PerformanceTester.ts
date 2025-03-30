@@ -378,7 +378,7 @@ async testPagination(): Promise<PerformanceResult> {
   for (const pageSize of pageSizes) {
     for (let i = 0; i < this.options.iterations; i++) {
       const startTime = performance.now();
-      await this.adapter.read(this.testStoreName, {
+      await this.adapter.readByVersion(this.testStoreName, {
         limit: pageSize,
         offset: i * pageSize % this.options.itemCount
       });
@@ -415,7 +415,7 @@ async testStress(): Promise<PerformanceResult> {
         operations.push(this.adapter.putBulk(this.testStoreName, [item]));
       } else if (opType === 1) {
         // Read operation (using pagination to avoid needing specific ID)
-        operations.push(this.adapter.read(this.testStoreName, {
+        operations.push(this.adapter.readByVersion(this.testStoreName, {
           limit: 5,
           offset: i * 5 % 20
         }));
@@ -492,7 +492,7 @@ async cleanupTestData(): Promise<void> {
     }
     // Find and delete other possible test data
     try {
-      const result = await this.adapter.read<TestModel>(this.testStoreName, { limit: 1000 });
+      const result = await this.adapter.readByVersion<TestModel>(this.testStoreName, { limit: 1000 });
       if (result && result.items.length > 0) {
         // Find items that look like test data
         const testItems = result.items.filter(item =>

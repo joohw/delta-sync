@@ -119,7 +119,6 @@ export class LocalCoordinator {
       since: since,
       limit: limit,
     });
-    console.log(`获取本地变更记录since=${since}, limit=${limit}`);
     const localChanges = result.items
       .sort((a, b) => (a._version || 0) - (b._version || 0))
       .slice(0, limit);
@@ -340,7 +339,6 @@ export class LocalCoordinator {
   async getCurrentVersion(): Promise<number> {
     try {
       const totalCount = await this.localAdapter.count(this.LOCAL_CHANGES_STORE);
-      console.log(`获取本地变更记录总数: ${totalCount}`);
       if (totalCount === 0) {
         return 0;
       }
@@ -348,9 +346,7 @@ export class LocalCoordinator {
         offset: totalCount - 1,
         limit: 1
       });
-      console.log(`获取最新一条变更记录: ${result.items[0]._version}`);
       if (result.items.length > 0 && result.items[0]._version !== undefined) {
-        console.log(`获取当前版本号: ${result.items[0]._version} (共有${totalCount}条记录)`);
         return result.items[0]._version;
       }
       return 0;

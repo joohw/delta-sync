@@ -162,7 +162,7 @@ export class SyncClient {
         if (options?.ids && options.ids.length > 0) {
             return await this.localAdapter.readBulk<T>(storeName, options.ids);
         } else {
-            const result = await this.localAdapter.read<T>(storeName, {
+            const result = await this.localAdapter.readByVersion<T>(storeName, {
                 limit: options?.limit,
                 offset: options?.offset,
                 since: options?.since // Now represents version number greater than this value

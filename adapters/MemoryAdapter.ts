@@ -41,7 +41,7 @@ export class MemoryAdapter implements DatabaseAdapter {
 
 
   // 实现新的read方法，支持分页和since参数
-  async read<T extends BaseModel>(
+  async readByVersion<T extends BaseModel>(
     storeName: string,
     options: {
       limit?: number;

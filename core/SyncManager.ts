@@ -30,12 +30,7 @@ export class SyncManager {
     }
     try {
       // 检查云端版本号，确保本地是最新的
-      const cloudVersionResponse = await this.cloudCoordinator.getLatestVersion();
-      if (cloudVersionResponse.version === undefined || cloudVersionResponse.version === null) {
-        return cloudVersionResponse;
-      }
-      console.log('开始推送本地的更新');
-      const cloudVersion = cloudVersionResponse.version || 0;
+      const cloudVersion = await this.cloudCoordinator.getLatestVersion();
       const localVersion = await this.localCoordinator.getCurrentVersion();
       if (cloudVersion > localVersion) {
         console.log('检测到云端有新的变更，先返回提示');

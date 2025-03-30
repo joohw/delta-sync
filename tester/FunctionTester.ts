@@ -179,7 +179,7 @@ export class AdapterFunctionTester {
       }
       // Test pagination
       console.log('Testing pagination...');
-      const pageResult = await this.adapter.read(this.testStoreName, { limit: 3, offset: 0 });
+      const pageResult = await this.adapter.readByVersion(this.testStoreName, { limit: 3, offset: 0 });
       if (!pageResult || !pageResult.items) {
         return { success: false, message: 'Pagination failed' };
       }
@@ -207,7 +207,7 @@ export class AdapterFunctionTester {
     try {
       console.log('Testing count functionality...');
       // Clear the test store to ensure a clean starting point
-      const initialItems = await this.adapter.read(this.testStoreName);
+      const initialItems = await this.adapter.readByVersion(this.testStoreName,{since:0, limit:1000});
       if (initialItems.items.length > 0) {
         await this.adapter.deleteBulk(
           this.testStoreName,

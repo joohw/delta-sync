@@ -102,12 +102,13 @@ export class IndexedDBAdapter implements DatabaseAdapter {
     }
 
 
-    async read<T extends BaseModel>(
+    async readByVersion<T extends BaseModel>(
         storeName: string,
         options: {
             limit?: number;
             offset?: number;
             since?: number;
+            order?: 'asc' | 'desc';
         } = {}
     ): Promise<{ items: T[]; hasMore: boolean }> {
         await this.ensureStore(storeName);
