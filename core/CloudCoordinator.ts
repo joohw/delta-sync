@@ -6,6 +6,7 @@ import {
     SyncResponse,
     DataChange,
     Attachment,
+    AttachmentChange
 } from './types';
 
 
@@ -100,103 +101,6 @@ export class CloudCoordinator {
                 success: false,
                 error: this.getErrorMessage(error)
             };
-        }
-    }
-
-
-
-    // 处理附件更改,返回需要上传的附件列表，由syncManager处理上传
-    async processAttachmentChanges(change: DataChange): Promise<{
-        attachmentsToUpload: string[],  // 需要上传到云端的附件ID
-        deletedAttachments: string[],   // 已经删除的附件
-        unchangedAttachments: string[]  // 无需处理的附件ID
-    }> {
-        const result = {
-            deletedAttachments: [] as string[],
-            attachmentsToUpload: [] as string[],
-            unchangedAttachments: [] as string[]
-        };
-        try {
-            // 从变更存储中查找之前的版本
-            const existingRecords = await this.cloudAdapter.readBulk<DataChange>(
-                this.CHANGES_STORE,
-                [change._delta_id]
-            );
-            // 如果是删除操作
-            if (change.type === 'delete') {
-                if (existingRecords.length > 0) {
-                    const existingRecord = existingRecords[0];
-                    if (existingRecord?.data?._attachments) {
-                        // 收集需要删除的附件ID
-                        const attachmentIdsToDelete = (existingRecord.data._attachments as Attachment[])
-                            .filter(att => att.id)
-                            .map(att => att.id);
-
-                        if (attachmentIdsToDelete.length > 0) {
-                            // 批量删除附件
-                            const deleteResult = await this.cloudAdapter.deleteFiles(attachmentIdsToDelete);
-                            result.deletedAttachments = deleteResult.deleted;
-                            // 记录删除失败的附件
-                            if (deleteResult.failed.length > 0) {
-                                console.warn(`删除云端附件失败: ${deleteResult.failed.join(', ')}`);
-                            }
-                        }
-                    }
-                }
-                return result;
-            }
-            // 如果是更新操作且包含附件
-            if (change.type === 'put' && change.data && change.data._attachments) {
-                // 获取新的附件ID集合
-                const newAttachments = change.data._attachments as Attachment[];
-                const newAttachmentIds = new Set<string>(
-                    newAttachments
-                        .filter(att => att.id && !att.missingAt)
-                        .map(att => att.id)
-                );
-                // 如果有之前的记录，比较新旧附件列表
-                if (existingRecords.length > 0) {
-                    const existingRecord = existingRecords[0];
-                    if (existingRecord?.data?._attachments) {
-                        const oldAttachments = existingRecord.data._attachments as Attachment[];
-                        const oldAttachmentIds = new Set<string>(
-                            oldAttachments
-                                .filter(att => att.id && !att.missingAt)
-                                .map(att => att.id)
-                        );
-                        // 收集需要删除的附件（在旧版本中存在但新版本中不存在）
-                        const attachmentIdsToDelete = oldAttachments
-                            .filter(att => att.id && !newAttachmentIds.has(att.id))
-                            .map(att => att.id);
-                        // 批量删除不再需要的附件
-                        if (attachmentIdsToDelete.length > 0) {
-                            const deleteResult = await this.cloudAdapter.deleteFiles(attachmentIdsToDelete);
-                            result.deletedAttachments = deleteResult.deleted;
-                            if (deleteResult.failed.length > 0) {
-                                console.warn(`删除云端旧附件失败: ${deleteResult.failed.join(', ')}`);
-                            }
-                        }
-                        // 确定要上传的附件和无需处理的附件
-                        for (const id of newAttachmentIds) {
-                            if (!oldAttachmentIds.has(id)) {
-                                result.attachmentsToUpload.push(id);
-                            } else {
-                                result.unchangedAttachments.push(id);
-                            }
-                        }
-                    } else {
-                        // 没有旧附件，所有新附件都需要上传
-                        result.attachmentsToUpload = Array.from(newAttachmentIds);
-                    }
-                } else {
-                    // 没有找到之前的记录，所有新附件都需要上传
-                    result.attachmentsToUpload = Array.from(newAttachmentIds);
-                }
-            }
-            return result;
-        } catch (error) {
-            console.warn(`处理附件变更分析失败:`, error);
-            return result;
         }
     }
 

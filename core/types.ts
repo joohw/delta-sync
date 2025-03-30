@@ -50,6 +50,13 @@ export interface QueryOptions {
     order?: 'asc' | 'desc';
 }
 
+export const DEFAULT_QUERY_OPTIONS: QueryOptions = {
+    since: 0,
+    offset: 0,
+    limit: 100,
+    order: 'asc',
+};
+
 
 // 数据库适配器,支持任意类型的数据库
 export interface DatabaseAdapter {
@@ -79,7 +86,16 @@ export interface DataChange<T = any> {
     _version: number;
     type: SyncOperationType;
     data?: T;   // 发生变更后的完整数据
+    attachmentChanges?: AttachmentChange[]; // 附件变更列表(这次更改导致的附件变更)
 }
+
+
+// 附件变更记录
+export interface AttachmentChange {
+    id: string;      // 附件的唯一标识符，指向二进制数据
+    type: SyncOperationType;     // 操作类型,是put还是删除
+}
+
 
 
 // 轻量级的本地变更记录
@@ -89,6 +105,7 @@ export interface LocalChangeRecord {
     _version: number;       // 变更版本号(自增)
     type: SyncOperationType; // 操作类型
     originalId: string;      // 原始数据ID
+    attachmentChanges?: AttachmentChange[]; // 附件变更列表(这次更改导致的附件变更)
 }
 
 

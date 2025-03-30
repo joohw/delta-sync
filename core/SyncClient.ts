@@ -8,6 +8,7 @@ import {
     Attachment,
     FileItem,
     DataChange,
+    DEFAULT_QUERY_OPTIONS,
     QueryOptions
 } from './types';
 import { LocalCoordinator } from './LocalCoordinator';
@@ -143,7 +144,7 @@ export class SyncClient {
             this.updateSyncStatus(SyncStatus.Operating);
             await this.localCoordinator.initialize();
             this.updateSyncStatus(SyncStatus.Idle);
-            console.log("Local storage initialization successful");
+
         } catch (error) {
             this.updateSyncStatus(SyncStatus.Error);
             console.error("Local storage initialization failed:", error);
@@ -154,13 +155,10 @@ export class SyncClient {
     // Query data
     async query<T extends BaseModel>(storeName: string, options?: QueryOptions): Promise<T[]> {
         try {
-            const result = await this.localAdapter.readByVersion<T>(
-                storeName, options);
-            console.log("查询数据成功: ", storeName, options, result.items);
+            const result = await this.localAdapter.readByVersion<T>(storeName, options || DEFAULT_QUERY_OPTIONS);
             return result.items;
         } catch (error) {
-            console.error(`查询数据失败: ${storeName}`, error);
-            throw new Error(`查询 ${storeName} 数据失败: ${error instanceof Error ? error.message : String(error)}`);
+            throw new Error
         }
     }
 
@@ -177,93 +175,102 @@ export class SyncClient {
         await this.localCoordinator.deleteBulk(storeName, itemIds);
     }
 
-    // Perform bidirectional synchronization operation
+    // Attach file to specified model
+    async attach(
+        storeId: string,
+        modelId: string,
+        file: File | Blob | ArrayBuffer,
+        filename: string,
+        mimeType: string,
+        metadata: any = {}
+    ): Promise<Attachment> {
+        if (!storeId) {
+            throw new Error('Store name is required');
+        }
+        if (!modelId) {
+            throw new Error('Model ID is required');
+        }
+        return this.localCoordinator.attachFile(
+            modelId,
+            storeId,
+            file,
+            filename,
+            mimeType,
+            metadata
+        );
+    }
+
+
+    // Detach file from specified model
+    async detach(model: BaseModel, attachmentId: string): Promise<BaseModel> {
+        return this.localCoordinator.detachFile(model, attachmentId);
+    }
+
+
     async sync(): Promise<boolean> {
         if (!this.syncManager) {
+            console.error("云同步源未配置，请先调用 setCloudAdapter");
             return false;
         }
         try {
-            this.currentSyncStatus = SyncStatus.Uploading;
-            const success = await this.syncManager.syncAll();
-            this.currentSyncStatus = success ? SyncStatus.Idle : SyncStatus.Error;
-            return success;
+            // 记录初始状态
+            this.updateSyncStatus(SyncStatus.Downloading);
+            // 1. 先从云端拉取更新
+            const pullSuccess = await this.pull();
+            if (!pullSuccess) {
+                console.error("同步操作中拉取云端数据失败");
+                return false;
+            }
+            // 2. 再将本地更改推送到云端
+            this.updateSyncStatus(SyncStatus.Uploading);
+            const pushSuccess = await this.push();
+            // 3. 根据结果更新状态
+            this.updateSyncStatus(pushSuccess ? SyncStatus.Idle : SyncStatus.Error);
+            // 4. 返回综合结果
+            return pushSuccess;
         } catch (error) {
-            this.currentSyncStatus = SyncStatus.Error;
-            throw error;
+            this.updateSyncStatus(SyncStatus.Error);
+            console.error("同步操作失败:", error);
+            return false;
         }
     }
+
 
     // Only push local changes to cloud
-    async push(): Promise<SyncResponse> {
+    async push(): Promise<boolean> {
         if (!this.syncManager) {
-            return {
-                success: false,
-                error: "Cloud sync source not configured, please call setCloudAdapter first"
-            };
+            console.error("Cloud sync source not configured, please call setCloudAdapter first");
+            return false;
         }
         try {
-            this.currentSyncStatus = SyncStatus.Uploading;
-            // Use batch size from configuration
-            const result = await this.syncManager.pushChanges(this.config.batchSize);
-            this.currentSyncStatus = result.success ? SyncStatus.Idle : SyncStatus.Error;
-            return result;
+            this.updateSyncStatus(SyncStatus.Uploading);
+            const success = await this.syncManager.pushChanges(this.config.batchSize);
+            this.updateSyncStatus(success ? SyncStatus.Idle : SyncStatus.Error);
+            return success;
         } catch (error) {
-            this.currentSyncStatus = SyncStatus.Error;
-            throw error;
+            this.updateSyncStatus(SyncStatus.Error);
+            console.error("Push operation failed:", error);
+            return false;
         }
     }
 
+
     // Only pull changes from cloud
-    async pull(): Promise<SyncResponse> {
+    async pull(): Promise<boolean> {
         if (!this.syncManager) {
-            return {
-                success: false,
-                error: "Cloud sync source not configured, please call setCloudAdapter first"
-            };
+            console.error("Cloud sync source not configured, please call setCloudAdapter first");
+            return false;
         }
         try {
             this.updateSyncStatus(SyncStatus.Downloading);
-            const result = await this.syncManager.pullChanges();
-            this.updateSyncStatus(result.success ? SyncStatus.Idle : SyncStatus.Error);
-            // If pull is successful and there is a data pull callback and change data, notify of new data
-            if (result.success && this.onDataPullCallback && result.changes && result.changes.length > 0) {
-                this.onDataPullCallback(result.changes);
-            }
-            return result;
+            const success = await this.syncManager.pullChanges();
+            this.updateSyncStatus(success ? SyncStatus.Idle : SyncStatus.Error);
+            return success;
         } catch (error) {
             this.updateSyncStatus(SyncStatus.Error);
-            throw error;
+            console.error("Pull operation failed:", error);
+            return false;
         }
-    }
-
-
-    // Get current sync status
-    async getClientStatus(): Promise<ClientStatus> {
-        const currentVersion = await this.localCoordinator.getCurrentVersion();
-        const pendingChanges = await this.localCoordinator.getPendingChanges(0);
-        return {
-            currentVersion,
-            pendingChanges: pendingChanges.length,
-            cloudConfigured: !!this.syncManager,
-            syncStatus: this.currentSyncStatus
-        };
-    }
-
-
-    // Save file attachments
-    async saveFiles(files: FileItem[]): Promise<Attachment[]> {
-        return await this.localAdapter.saveFiles(files);
-    }
-
-
-    // Read file attachments
-    async readFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>> {
-        return await this.localAdapter.readFiles(fileIds);
-    }
-
-    // Delete file attachments
-    async deleteFiles(fileIds: string[]): Promise<{ deleted: string[], failed: string[] }> {
-        return await this.localAdapter.deleteFiles(fileIds);
     }
 
 

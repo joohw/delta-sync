@@ -5,9 +5,15 @@
 import {
   BaseModel,
   DatabaseAdapter,
-  DataChange, getChangeId, getOriginalId,
-  SyncOperationType, FileItem,
-  Attachment, LocalChangeRecord
+  DataChange,
+  getChangeId,
+  getOriginalId,
+  SyncOperationType,
+  FileItem,
+  Attachment,
+  AttachmentChange,
+  LocalChangeRecord,
+
 } from './types';
 import { EncryptionConfig } from './SyncConfig'
 
@@ -26,7 +32,6 @@ export class LocalCoordinator {
   async initialize(): Promise<void> {
     await this.localAdapter.initSync();
   }
-
 
 
   // 写入数据并自动跟踪变更
@@ -54,17 +59,25 @@ export class LocalCoordinator {
   }
 
 
+
   // 删除数据并且自动写入变更
   async deleteBulk(
     storeName: string,
     ids: string[],
-    skipTracking: boolean = false  // 是否跳过变更跟踪，默认为false
+    skipTracking: boolean = false
   ): Promise<void> {
-    // 先读取要删除的数据
     const items = await this.localAdapter.readBulk<BaseModel>(storeName, ids);
-    // 执行删除操作
+    for (const item of items) {
+      if (item._attachments) {
+        const attachmentIds = item._attachments
+          .filter(att => att.id && !att.missingAt)
+          .map(att => att.id);
+        if (attachmentIds.length > 0) {
+          await this.localAdapter.deleteFiles(attachmentIds);
+        }
+      }
+    }
     await this.localAdapter.deleteBulk(storeName, ids);
-    // 是否需要跟踪变更
     if (!skipTracking) {
       for (const item of items) {
         await this.recordChange(
@@ -80,7 +93,8 @@ export class LocalCoordinator {
   }
 
 
-  // 记录变更的新方法
+
+  // 记录变更，包括附件的变更
   private async recordChange<T extends BaseModel>(
     storeName: string,
     data: T,
@@ -88,12 +102,61 @@ export class LocalCoordinator {
   ): Promise<void> {
     const syncId = getChangeId(storeName, data._delta_id);
     const version = await this.nextVersion();
+    // 计算附件变更
+    let attachmentChanges: AttachmentChange[] = [];
+    if (data._attachments) {
+      const existingItems = await this.localAdapter.readBulk<BaseModel>(
+        storeName,
+        [data._delta_id]
+      );
+      const oldAttachmentIds = new Set<string>();
+      if (existingItems.length > 0 && existingItems[0]._attachments) {
+        existingItems[0]._attachments
+          .filter(att => att.id && !att.missingAt)
+          .forEach(att => oldAttachmentIds.add(att.id));
+      }
+      // 对于 put 操作:
+      if (operationType === 'put') {
+        const newAttachmentIds = new Set<string>(
+          data._attachments
+            .filter(att => att.id && !att.missingAt)
+            .map(att => att.id)
+        );
+        // 需要删除的附件
+        for (const oldId of oldAttachmentIds) {
+          if (!newAttachmentIds.has(oldId)) {
+            attachmentChanges.push({
+              id: oldId,
+              type: 'delete'
+            });
+          }
+        }
+        // 需要添加的附件
+        for (const attachment of data._attachments) {
+          if (attachment.id && !attachment.missingAt && !oldAttachmentIds.has(attachment.id)) {
+            attachmentChanges.push({
+              id: attachment.id,
+              type: 'put'
+            });
+          }
+        }
+      }
+      else if (operationType === 'delete') {
+        for (const oldId of oldAttachmentIds) {
+          attachmentChanges.push({
+            id: oldId,
+            type: 'delete'
+          });
+        }
+      }
+    }
     const changeRecord: LocalChangeRecord = {
       _delta_id: syncId,
       _store: storeName,
       _version: version,
       type: operationType,
-      originalId: data._delta_id
+      originalId: data._delta_id,
+      attachmentChanges: attachmentChanges.length > 0 ? attachmentChanges : undefined
     };
     console.log(`记录变更：storeName=${storeName}, id=${data._delta_id}, version=${version}, operation=${operationType}`);
     await this.localAdapter.putBulk(this.LOCAL_CHANGES_STORE, [changeRecord]);
@@ -169,22 +232,30 @@ export class LocalCoordinator {
         const items = await this.localAdapter.readBulk<BaseModel>(change._store, [change.originalId]);
         if (change.type === 'put') {
           if (items.length > 0) {
-            fullChanges.push({
+            // 如果有附件变更，确保数据中包含这些信息
+            const dataChange: DataChange = {
               _delta_id: change._delta_id,
               _store: change._store,
               _version: change._version,
               type: change.type,
               data: { ...items[0] }
-            });
+            };
+
+            fullChanges.push(dataChange);
           }
         } else if (change.type === 'delete') {
           if (items.length === 0) {
-            fullChanges.push({
+            const dataChange: DataChange = {
               _delta_id: change._delta_id,
               _store: change._store,
               _version: change._version,
               type: change.type
-            });
+            };
+            // 如果记录了附件变更，也包含进来
+            if (change.attachmentChanges?.length) {
+              dataChange.attachmentChanges = change.attachmentChanges;
+            }
+            fullChanges.push(dataChange);
           }
         }
       } catch (error) {
@@ -194,104 +265,6 @@ export class LocalCoordinator {
     return fullChanges;
   }
 
-
-  // 应用附件的更改，返回还需要下载的附件
-  async applyAttachmentChanges(change: DataChange): Promise<{
-    attachmentsToDownload: string[],
-    deletedAttachments: string[],
-    unchangedAttachments: string[]
-  }> {
-    const result = {
-      deletedAttachments: [] as string[],
-      attachmentsToDownload: [] as string[],
-      unchangedAttachments: [] as string[]
-    };
-    try {
-      // 如果是删除操作
-      if (change.type === 'delete') {
-        const originalId = getOriginalId(change._delta_id, change._store);
-        const existingItems = await this.localAdapter.readBulk<BaseModel>(
-          change._store,
-          [originalId]
-        );
-        if (existingItems.length > 0) {
-          const existingItem = existingItems[0];
-          if (existingItem._attachments) {
-            // 收集要删除的附件ID
-            const attachmentIdsToDelete = existingItem._attachments
-              .filter(att => att.id)
-              .map(att => att.id);
-            if (attachmentIdsToDelete.length > 0) {
-              // 批量删除附件
-              const deleteResult = await this.localAdapter.deleteFiles(attachmentIdsToDelete);
-              result.deletedAttachments = deleteResult.deleted;
-              // 记录删除失败的附件
-              if (deleteResult.failed.length > 0) {
-                console.warn(`删除本地附件失败: ${deleteResult.failed.join(', ')}`);
-              }
-            }
-          }
-        }
-        return result;
-      }
-      // 如果是更新操作且包含附件
-      if (change.type === 'put' && change.data) {
-        // 获取新的附件ID集合
-        const newAttachments = (change.data._attachments || []) as Attachment[];
-        const newAttachmentIds = new Set<string>(
-          newAttachments
-            .filter((att: Attachment) => att.id && !att.missingAt)
-            .map((att: Attachment) => att.id)
-        );
-        // 从原始 store 中查找本地对应项目
-        const existingItems = await this.localAdapter.readBulk<BaseModel>(
-          change._store,
-          [change.data._delta_id]
-        );
-        // 记录下所有修改前的附件ID，用于完整比对
-        let oldAttachmentIds = new Set<string>();
-        let oldAttachments: Attachment[] = [];
-        // 如果有本地记录，比较新旧附件列表
-        if (existingItems.length > 0) {
-          const existingItem = existingItems[0];
-          if (existingItem._attachments) {
-            oldAttachments = existingItem._attachments as Attachment[];
-            oldAttachmentIds = new Set<string>(
-              oldAttachments
-                .filter(att => att.id && !att.missingAt)
-                .map(att => att.id)
-            );
-          }
-        }
-        // 收集需要删除的附件ID（在本地存在但新版本中不存在）
-        const attachmentIdsToDelete = oldAttachments
-          .filter(att => att.id && !att.missingAt && !newAttachmentIds.has(att.id))
-          .map(att => att.id);
-        // 批量删除不再需要的附件
-        if (attachmentIdsToDelete.length > 0) {
-          const deleteResult = await this.localAdapter.deleteFiles(attachmentIdsToDelete);
-          result.deletedAttachments = deleteResult.deleted;
-          if (deleteResult.failed.length > 0) {
-            console.warn(`删除本地旧附件失败: ${deleteResult.failed.join(', ')}`);
-          }
-        }
-        // 确定要下载的附件和无需处理的附件
-        for (const attachment of newAttachments) {
-          if (attachment.id && !attachment.missingAt) {
-            if (!oldAttachmentIds.has(attachment.id)) {
-              result.attachmentsToDownload.push(attachment.id);
-            } else {
-              result.unchangedAttachments.push(attachment.id);
-            }
-          }
-        }
-      }
-      return result;
-    } catch (error) {
-      console.warn(`处理附件变更分析失败:`, error);
-      return result;
-    }
-  }
 
 
   // 维护方法,清理旧的变更记录
@@ -339,28 +312,6 @@ export class LocalCoordinator {
   }
 
 
-  // 记录完整的数据变更历史
-  private async trackChange<T extends BaseModel>(
-    storeName: string,
-    data: T,
-    operationType: SyncOperationType,
-    skipVersionIncrement: boolean = false
-  ): Promise<void> {
-    const syncId = getChangeId(storeName, data._delta_id);
-    const version = skipVersionIncrement && data._version ?
-      data._version :
-      await this.nextVersion();
-    const changeRecord: LocalChangeRecord = {
-      _delta_id: syncId,
-      _store: storeName,  // 确保这里存储的是原始store名称
-      _version: version,
-      type: operationType,
-      originalId: data._delta_id
-    };
-    console.log(`记录变更：storeName=${storeName}, id=${data._delta_id}, version=${version}, operation=${operationType}`);
-    await this.localAdapter.putBulk(this.LOCAL_CHANGES_STORE, [changeRecord]);
-  }
-
 
   async nextVersion(): Promise<number> {
     try {
@@ -394,16 +345,19 @@ export class LocalCoordinator {
     }
   }
 
-
-  async attachFile<T extends BaseModel>(
-    model: T,
+  async attachFile(
+    modelId: string,
+    storeName: string,
     file: File | Blob | ArrayBuffer,
-    metadata: {
-      filename: string,
-      mimeType: string,
-      metadata?: Record<string, any>
+    filename: string,
+    mimeType: string,
+    metadata: any = {},
+  ): Promise<Attachment> {
+    // 首先获取原始模型
+    const items = await this.localAdapter.readBulk<BaseModel>(storeName, [modelId]);
+    if (items.length === 0) {
+      throw new Error(`无法找到ID为 ${modelId} 的模型`);
     }
-  ): Promise<T> {
     const fileId = `attachment_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
     const fileItem: FileItem = {
       fileId: fileId,
@@ -411,23 +365,24 @@ export class LocalCoordinator {
     };
     // 保存文件到存储
     const [savedAttachment] = await this.localAdapter.saveFiles([fileItem]);
+    const attachment: Attachment = {
+      id: savedAttachment.id,
+      filename: filename,
+      mimeType: mimeType, // 明确保留为必需参数
+      size: savedAttachment.size,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      metadata: metadata || {}
+    };
+    const model = items[0];
     // 添加附件到模型
     if (!model._attachments) {
       model._attachments = [];
     }
-    // 创建附件对象
-    const attachment: Attachment = {
-      id: savedAttachment.id,
-      filename: metadata.filename,
-      mimeType: metadata.mimeType,
-      size: savedAttachment.size,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      metadata: metadata.metadata || {}
-    };
-    // 添加到模型
     model._attachments.push(attachment);
-    return model;
+    const targetStoreName = model._store || storeName;
+    await this.putBulk(targetStoreName, [model]);
+    return attachment;
   }
 
 
@@ -449,47 +404,6 @@ export class LocalCoordinator {
   }
 
 
-  // 获取模型的所有附件内容
-  async getAttachmentContents<T extends BaseModel>(
-    model: T
-  ): Promise<Map<string, { attachment: Attachment, content: Blob | ArrayBuffer | null }>> {
-    if (!model._attachments || model._attachments.length === 0) {
-      return new Map();
-    }
-    const attachmentIds = model._attachments.map(att => att.id);
-    const contentsMap = await this.localAdapter.readFiles(attachmentIds);
-    const result = new Map();
-    for (const attachment of model._attachments) {
-      const content = contentsMap.get(attachment.id);
-      result.set(attachment.id, {
-        attachment,
-        content
-      });
-    }
-    return result;
-  }
-
-
-
-  // 获取单个附件内容
-  async getAttachmentContent<T extends BaseModel>(
-    model: T,
-    attachmentId: string
-  ): Promise<{ attachment: Attachment, content: Blob | ArrayBuffer | null } | null> {
-    if (!model._attachments) {
-      return null;
-    }
-    // 找到附件
-    const attachment = model._attachments.find(att => att.id === attachmentId);
-    if (!attachment) {
-      return null;
-    }
-    // 读取内容
-    const contentsMap = await this.localAdapter.readFiles([attachmentId]);
-    // 处理可能的 undefined 情况
-    const content = contentsMap.get(attachmentId) || null;
-    return { attachment, content };
-  }
 
 
 }
