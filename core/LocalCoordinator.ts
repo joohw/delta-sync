@@ -35,10 +35,8 @@ export class LocalCoordinator {
     items: T[],
     skipVersionIncrement: boolean = false  // 是否跳过版本号自增，默认为false
   ): Promise<T[]> {
-    const now = Date.now();
     const updatedItems = items.map(item => ({
       ...item,
-      _version: item._version || now, // 保留原始版本号（如果有）
     }));
     const result = await this.localAdapter.putBulk(storeName, updatedItems);
     for (const item of updatedItems) {
@@ -121,6 +119,7 @@ export class LocalCoordinator {
       since: since,
       limit: limit,
     });
+    console.log(`获取本地变更记录since=${since}, limit=${limit}`);
     const localChanges = result.items
       .sort((a, b) => (a._version || 0) - (b._version || 0))
       .slice(0, limit);
@@ -129,7 +128,6 @@ export class LocalCoordinator {
       if (change.type === 'put') {
         try {
           const items = await this.localAdapter.readBulk<BaseModel>(change._store, [change.originalId]);
-          console.log(`查询结果: 找到${items.length}条数据`);
           if (items.length > 0) {
             fullChanges.push({
               _delta_id: change._delta_id,
@@ -328,7 +326,6 @@ export class LocalCoordinator {
 
   async nextVersion(): Promise<number> {
     try {
-      // 获取当前最高版本号
       const currentVersion = await this.getCurrentVersion();
       const newVersion = currentVersion + 1;
       return newVersion;
@@ -339,10 +336,11 @@ export class LocalCoordinator {
   }
 
 
-
+  // 获取当前版本号(Todo优化查询方式)
   async getCurrentVersion(): Promise<number> {
     try {
       const totalCount = await this.localAdapter.count(this.LOCAL_CHANGES_STORE);
+      console.log(`获取本地变更记录总数: ${totalCount}`);
       if (totalCount === 0) {
         return 0;
       }
@@ -350,6 +348,7 @@ export class LocalCoordinator {
         offset: totalCount - 1,
         limit: 1
       });
+      console.log(`获取最新一条变更记录: ${result.items[0]._version}`);
       if (result.items.length > 0 && result.items[0]._version !== undefined) {
         console.log(`获取当前版本号: ${result.items[0]._version} (共有${totalCount}条记录)`);
         return result.items[0]._version;

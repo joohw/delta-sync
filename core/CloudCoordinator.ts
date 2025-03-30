@@ -250,7 +250,7 @@ export class CloudCoordinator {
 
 
 
-    // 获取最新变更的版本号
+    // 获取最新变更的版本号(Todo: 优化查询方式)
     async getLatestVersion(): Promise<SyncResponse> {
         try {
             // 设置默认版本号
