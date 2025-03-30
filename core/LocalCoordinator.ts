@@ -338,14 +338,13 @@ export class LocalCoordinator {
   // 获取当前版本号(Todo优化查询方式)
   async getCurrentVersion(): Promise<number> {
     try {
-      const totalCount = await this.localAdapter.count(this.LOCAL_CHANGES_STORE);
-      if (totalCount === 0) {
-        return 0;
-      }
-      const result = await this.localAdapter.readByVersion<LocalChangeRecord>(this.LOCAL_CHANGES_STORE, {
-        offset: totalCount - 1,
-        limit: 1
-      });
+      const result = await this.localAdapter.readByVersion<LocalChangeRecord>(
+        this.LOCAL_CHANGES_STORE, 
+        {
+          limit: 1,
+          order: 'desc' // 直接使用倒序排列
+        }
+      );
       if (result.items.length > 0 && result.items[0]._version !== undefined) {
         return result.items[0]._version;
       }
@@ -355,7 +354,7 @@ export class LocalCoordinator {
       return 0;
     }
   }
-
+  
 
   async attachFile<T extends BaseModel>(
     model: T,

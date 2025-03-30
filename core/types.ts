@@ -58,7 +58,6 @@ export interface DatabaseAdapter {
     deleteBulk(storeName: string, ids: string[]): Promise<void>;
     // 读写文件相关的操作
     readFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>>;
-    count(storeName: string): Promise<number>;
     saveFiles(files: FileItem[]): Promise<Attachment[]>;
     deleteFiles(fileIds: string[]): Promise<{
         deleted: string[],

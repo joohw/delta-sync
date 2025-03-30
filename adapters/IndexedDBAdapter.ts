@@ -102,6 +102,7 @@ export class IndexedDBAdapter implements DatabaseAdapter {
     }
 
 
+    // 读取指定版本之后的所有数据
     async readByVersion<T extends BaseModel>(
         storeName: string,
         options: {
@@ -115,6 +116,7 @@ export class IndexedDBAdapter implements DatabaseAdapter {
         const limit = options.limit || Number.MAX_SAFE_INTEGER;
         const offset = options.offset || 0;
         const since = options.since || 0;
+        const order = options.order || 'asc';
         return new Promise<{ items: T[]; hasMore: boolean }>((resolve, reject) => {
             const transaction = this.db!.transaction(storeName, 'readonly');
             const store = transaction.objectStore(storeName);
@@ -123,17 +125,34 @@ export class IndexedDBAdapter implements DatabaseAdapter {
             let processed = 0;
             let hasMore = false;
             try {
+                // 获取索引
+                const versionIndex = store.index('_version');
                 let request: IDBRequest;
-                if (since > 0) {
-                    // 尝试使用版本号索引
-                    const versionIndex = store.index('_version');
-                    const range = IDBKeyRange.lowerBound(since, true);
-                    request = versionIndex.openCursor(range);
+                // 根据排序顺序和是否有since参数决定如何打开游标
+                if (order === 'desc') {
+                    // 降序排列 - 从大到小
+                    if (since > 0) {
+                        // 如果指定了since，使用上界
+                        const range = IDBKeyRange.upperBound(since, true);
+                        request = versionIndex.openCursor(range, 'prev');
+                    } else {
+                        // 否则从最大值开始
+                        request = versionIndex.openCursor(null, 'prev');
+                    }
                 } else {
-                    request = store.openCursor();
+                    // 升序排列 - 从小到大
+                    if (since > 0) {
+                        // 如果指定了since，使用下界
+                        const range = IDBKeyRange.lowerBound(since, true);
+                        request = versionIndex.openCursor(range);
+                    } else {
+                        // 否则从最小值开始
+                        request = versionIndex.openCursor();
+                    }
                 }
-                request.onerror = () => {
-                    reject(new Error(`Failed to read data from ${storeName}`));
+                request.onerror = (event) => {
+                    console.error(`索引查询失败: ${(event.target as IDBRequest).error}`);
+                    this.fallbackReadByVersion(store, since, offset, limit, order, resolve, reject);
                 };
                 request.onsuccess = (event) => {
                     const cursor = (event.target as IDBRequest).result as IDBCursorWithValue;
@@ -154,37 +173,12 @@ export class IndexedDBAdapter implements DatabaseAdapter {
                     }
                 };
             } catch (error) {
-                // 索引查询失败时回退到标准方法
-                console.warn(`Index query failed, fallback to standard method: ${error}`);
-                const request = store.openCursor();
-                request.onerror = () => {
-                    reject(new Error(`Failed to read data from ${storeName}`));
-                };
-                request.onsuccess = (event) => {
-                    const cursor = (event.target as IDBRequest).result as IDBCursorWithValue;
-                    if (cursor) {
-                        const item = cursor.value as T;
-                        const itemVersion = (item as any)._version || 0;
-                        if (!since || itemVersion > since) {
-                            if (skipped < offset) {
-                                skipped++;
-                            } else if (processed < limit) {
-                                items.push(item);
-                                processed++;
-                            } else {
-                                hasMore = true;
-                                resolve({ items, hasMore });
-                                return;
-                            }
-                        }
-                        cursor.continue();
-                    } else {
-                        resolve({ items, hasMore });
-                    }
-                };
+                console.warn(`索引方法初始化失败，回退到标准方法: ${error}`);
+                this.fallbackReadByVersion(store, since, offset, limit, order, resolve, reject);
             }
         });
     }
+
 
     async readBulk<T extends BaseModel>(storeName: string, ids: string[]): Promise<T[]> {
         await this.ensureStore(storeName);
@@ -446,48 +440,78 @@ export class IndexedDBAdapter implements DatabaseAdapter {
     }
 
 
-    // 计数
-    async count(storeName: string): Promise<number> {
-        await this.ensureStore(storeName);
-        return new Promise<number>((resolve, reject) => {
-            const transaction = this.db!.transaction(storeName, 'readonly');
-            const store = transaction.objectStore(storeName);
-            let count = 0;
-            try {
-                const countRequest = store.count();
-                countRequest.onsuccess = () => {
-                    resolve(countRequest.result);
-                };
-                countRequest.onerror = () => {
-                    const cursorRequest = store.openCursor();
-                    cursorRequest.onsuccess = (event) => {
-                        const cursor = (event.target as IDBRequest).result;
-                        if (cursor) {
-                            count++;
-                            cursor.continue();
-                        } else {
-                            resolve(count);
-                        }
-                    };
-                    cursorRequest.onerror = () => {
-                        reject(new Error(`Failed to count records in ${storeName}`));
-                    };
-                };
-            } catch (error) {
-                const cursorRequest = store.openCursor();
-                cursorRequest.onsuccess = (event) => {
-                    const cursor = (event.target as IDBRequest).result;
-                    if (cursor) {
-                        count++;
-                        cursor.continue();
-                    } else {
-                        resolve(count);
+    // 提取回退方法以减少代码重复
+    private fallbackReadByVersion<T extends BaseModel>(
+        store: IDBObjectStore,
+        since: number,
+        offset: number,
+        limit: number,
+        order: 'asc' | 'desc',
+        resolve: (value: { items: T[]; hasMore: boolean }) => void,
+        reject: (reason?: any) => void
+    ): void {
+        const items: T[] = [];
+        let skipped = 0;
+        let processed = 0;
+        let hasMore = false;
+        // 使用标准方法打开游标
+        const request = store.openCursor();
+        // 如果需要降序，先收集所有符合条件的项，再排序
+        if (order === 'desc') {
+            const allItems: T[] = [];
+            request.onerror = () => {
+                reject(new Error(`Failed to read data from store`));
+            };
+            request.onsuccess = (event) => {
+                const cursor = (event.target as IDBRequest).result as IDBCursorWithValue;
+                if (cursor) {
+                    const item = cursor.value as T;
+                    const itemVersion = (item as any)._version || 0;
+                    // 如果没有since条件或者版本号小于since (降序时需要小于)
+                    if (!since || itemVersion < since) {
+                        allItems.push(item);
                     }
-                };
-                cursorRequest.onerror = () => {
-                    reject(new Error(`Failed to count records in ${storeName}`));
-                };
-            }
-        });
+                    cursor.continue();
+                } else {
+                    // 完成数据收集后按版本号排序
+                    allItems.sort((a, b) => ((b as any)._version || 0) - ((a as any)._version || 0));
+                    // 应用offset和limit
+                    for (let i = offset; i < allItems.length && processed < limit; i++) {
+                        items.push(allItems[i]);
+                        processed++;
+                    }
+
+                    hasMore = allItems.length > offset + limit;
+                    resolve({ items, hasMore });
+                }
+            };
+        } else {
+            // 升序处理方式
+            request.onerror = () => {
+                reject(new Error(`Failed to read data from store`));
+            };
+            request.onsuccess = (event) => {
+                const cursor = (event.target as IDBRequest).result as IDBCursorWithValue;
+                if (cursor) {
+                    const item = cursor.value as T;
+                    const itemVersion = (item as any)._version || 0;
+                    if (!since || itemVersion > since) {
+                        if (skipped < offset) {
+                            skipped++;
+                        } else if (processed < limit) {
+                            items.push(item);
+                            processed++;
+                        } else {
+                            hasMore = true;
+                            resolve({ items, hasMore });
+                            return;
+                        }
+                    }
+                    cursor.continue();
+                } else {
+                    resolve({ items, hasMore });
+                }
+            };
+        }
     }
 }

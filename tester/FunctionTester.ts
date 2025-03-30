@@ -43,8 +43,6 @@ export class AdapterFunctionTester {
       // Test large file operations
       results.largeFileOperations = await this.testLargeFileOperations();
       allSuccess = allSuccess && results.largeFileOperations.success;
-      // Test count functionality
-      results.count = await this.testCount();
       allSuccess = allSuccess && results.count.success;
       console.log('=== Adapter tests completed ===');
       if (allSuccess) {
@@ -201,57 +199,6 @@ export class AdapterFunctionTester {
     }
   }
 
-
-  // Test count functionality
-  async testCount(): Promise<{ success: boolean; message: string }> {
-    try {
-      console.log('Testing count functionality...');
-      // Clear the test store to ensure a clean starting point
-      const initialItems = await this.adapter.readByVersion(this.testStoreName,{since:0, limit:1000});
-      if (initialItems.items.length > 0) {
-        await this.adapter.deleteBulk(
-          this.testStoreName,
-          initialItems.items.map(item => item._delta_id)
-        );
-      }
-      // Verify empty store count
-      const emptyCount = await this.adapter.count(this.testStoreName);
-      if (emptyCount !== 0) {
-        return {
-          success: false,
-          message: `Empty store count error: expected=0, actual=${emptyCount}`
-        };
-      }
-      // Insert a specified number of test items
-      const itemCount = 5;
-      const testItems: BaseModel[] = Array(itemCount).fill(0).map((_, index) => ({
-        _delta_id: `count_test_${Date.now()}_${index}`,
-        _sync_status: 'pending',
-        _store: this.testStoreName,
-      }));
-      await this.adapter.putBulk(this.testStoreName, testItems);
-      // Verify count result
-      const count = await this.adapter.count(this.testStoreName);
-      // Clean up test data
-      await this.adapter.deleteBulk(
-        this.testStoreName,
-        testItems.map(item => item._delta_id)
-      );
-      if (count !== itemCount) {
-        return {
-          success: false,
-          message: `Store count error: expected=${itemCount}, actual=${count}`
-        };
-      }
-      return { success: true, message: 'Count functionality test passed' };
-    } catch (error) {
-      console.error('Count test failed:', error);
-      return {
-        success: false,
-        message: `Count test failed: ${error instanceof Error ? error.message : String(error)}`
-      };
-    }
-  }
 
 
   // Test batch file operations

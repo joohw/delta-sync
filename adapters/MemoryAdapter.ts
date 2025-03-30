@@ -40,26 +40,32 @@ export class MemoryAdapter implements DatabaseAdapter {
   }
 
 
-  // 实现新的read方法，支持分页和since参数
+
+  //readByVersion
   async readByVersion<T extends BaseModel>(
     storeName: string,
     options: {
       limit?: number;
       offset?: number;
       since?: number;
+      order?: 'asc' | 'desc';
     } = {}
   ): Promise<{ items: T[]; hasMore: boolean }> {
     this.ensureStoreExists(storeName);
     const store = this.stores.get(storeName)!;
-    // 获取所有记录
     let items = Array.from(store.values()) as T[];
-    // 如果指定了since参数，则按时间戳筛选
-    if (options.since) {
-      items = items.filter(item => (item._version || 0) > options.since!);
+    if (options.since !== undefined) {
+      if (options.order === 'desc') {
+        items = items.filter(item => (item._version || 0) < options.since!);
+      } else {
+        items = items.filter(item => (item._version || 0) > options.since!);
+      }
     }
-    // 按版本号排序
-    items.sort((a, b) => (a._version || 0) - (b._version || 0));
-    // 计算分页结果
+    if (options.order === 'desc') {
+      items.sort((a, b) => (b._version || 0) - (a._version || 0));
+    } else {
+      items.sort((a, b) => (a._version || 0) - (b._version || 0));
+    }
     const offset = options.offset || 0;
     const limit = options.limit || items.length;
     const paginatedItems = items.slice(offset, offset + limit);
@@ -69,7 +75,8 @@ export class MemoryAdapter implements DatabaseAdapter {
       hasMore
     };
   }
-
+  
+  
 
   async readBulk<T extends BaseModel>(storeName: string, ids: string[]): Promise<T[]> {
     this.ensureStoreExists(storeName);
@@ -204,11 +211,6 @@ export class MemoryAdapter implements DatabaseAdapter {
   }
 
 
-  async count(storeName: string): Promise<number> {
-    this.ensureStoreExists(storeName);
-    const store = this.stores.get(storeName)!;
-    return store.size;
-  }
 
 
 }

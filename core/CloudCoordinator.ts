@@ -252,23 +252,22 @@ export class CloudCoordinator {
     // 获取最新变更的版本号(Todo: 优化查询方式)
     async getLatestVersion(): Promise<number> {
         try {
-            // 设置默认版本号
-            let version = 0;
-            const totalCount = await this.cloudAdapter.count(this.CHANGES_STORE);
-            if (totalCount > 0) {
-                const result = await this.cloudAdapter.readByVersion<DataChange>(this.CHANGES_STORE, {
-                    offset: totalCount - 1,
-                    limit: 1
-                });
-                if (result.items.length > 0 && result.items[0]._version !== undefined) {
-                    version = result.items[0]._version;
+            const result = await this.cloudAdapter.readByVersion<DataChange>(
+                this.CHANGES_STORE,
+                {
+                    limit: 1,
+                    order: 'desc' // 直接使用倒序排列
                 }
+            );
+            if (result.items.length > 0 && result.items[0]._version !== undefined) {
+                return result.items[0]._version;
             }
-            return version;
+            return 0;
         } catch (error) {
             console.error('获取最新版本号失败:', error);
             return 0;
         }
     }
+
 
 }
