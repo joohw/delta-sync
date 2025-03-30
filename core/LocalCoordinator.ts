@@ -69,11 +69,10 @@ export class LocalCoordinator {
         storeName,
         deleteItem,
         'delete',
-        false,
+        skipVersionIncrement, // 正确传递是否跳过版本号递增的参数
       );
     }
   }
-
 
 
   // 从云端同步数据（使用现有版本号）
@@ -113,43 +112,48 @@ export class LocalCoordinator {
   }
 
 
-  // 获取待同步的变更记录  待修复
+
+  // 获取待同步的变更记录
   async getPendingChanges(since: number, limit: number = 100): Promise<DataChange[]> {
+    // 读取变更记录
     const result = await this.localAdapter.readByVersion<LocalChangeRecord>(this.LOCAL_CHANGES_STORE, {
       since: since,
       limit: limit,
     });
+    // 按版本排序并限制数量
     const localChanges = result.items
       .sort((a, b) => (a._version || 0) - (b._version || 0))
       .slice(0, limit);
     const fullChanges: DataChange[] = [];
     for (const change of localChanges) {
-      if (change.type === 'put') {
-        try {
-          const items = await this.localAdapter.readBulk<BaseModel>(change._store, [change.originalId]);
+      try {
+        const items = await this.localAdapter.readBulk<BaseModel>(change._store, [change.originalId]);
+        if (change.type === 'put') {
           if (items.length > 0) {
             fullChanges.push({
               _delta_id: change._delta_id,
               _store: change._store,
               _version: change._version,
               type: change.type,
-              data: { ...items[0], _store: change._store }
+              data: { ...items[0] } 
             });
           } else {
-            console.warn(`无法找到原始数据: store=${change._store}, id=${change.originalId}`);
+            console.warn(`跳过变更记录: store=${change._store}, id=${change.originalId}`);
           }
-        } catch (error) {
-          console.error(`处理变更记录时出错:`, error);
-          // 异常处理
+        } else if (change.type === 'delete') {
+          if (items.length === 0) {
+            fullChanges.push({
+              _delta_id: change._delta_id,
+              _store: change._store,
+              _version: change._version,
+              type: change.type
+            });
+          } else {
+            console.warn(`跳过变更记录: store=${change._store}, id=${change.originalId}`);
+          }
         }
-      } else {
-        // 对于delete操作，直接添加到结果中
-        fullChanges.push({
-          _delta_id: change._delta_id,
-          _store: change._store,
-          _version: change._version,
-          type: change.type
-        });
+      } catch (error) {
+        console.error(`处理变更记录时出错:`, error);
       }
     }
     return fullChanges;
@@ -339,7 +343,7 @@ export class LocalCoordinator {
   async getCurrentVersion(): Promise<number> {
     try {
       const result = await this.localAdapter.readByVersion<LocalChangeRecord>(
-        this.LOCAL_CHANGES_STORE, 
+        this.LOCAL_CHANGES_STORE,
         {
           limit: 1,
           order: 'desc' // 直接使用倒序排列
@@ -354,7 +358,7 @@ export class LocalCoordinator {
       return 0;
     }
   }
-  
+
 
   async attachFile<T extends BaseModel>(
     model: T,

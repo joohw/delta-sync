@@ -54,11 +54,11 @@
   "description": "A lightweight framework for bi-directional database synchronization with automatic version tracking and conflict resolution.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/joowh/delta-sync.git"
+    "url": "git+https://github.com/joohw/delta-sync.git"
   },
-  "homepage": "https://github.com/joowh/delta-sync#readme",
+  "homepage": "https://github.com/joohw/delta-sync#readme",
   "bugs": {
-    "url": "https://github.com/yourusername/delta-sync/issues"
+    "url": "https://github.com/joohw/delta-sync/issues"
   },
   "devDependencies": {
     "@types/crypto-js": "^4.2.2",
