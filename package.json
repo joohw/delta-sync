@@ -1,6 +1,6 @@
 {
   "name": "delta-sync",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.2",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -52,6 +52,14 @@
   "author": "joo hwang",
   "license": "ISC",
   "description": "A lightweight framework for bi-directional database synchronization with automatic version tracking and conflict resolution.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joowh/delta-sync.git"
+  },
+  "homepage": "https://github.com/joowh/delta-sync#readme",
+  "bugs": {
+    "url": "https://github.com/yourusername/delta-sync/issues"
+  },
   "devDependencies": {
     "@types/crypto-js": "^4.2.2",
     "@types/node": "^22.13.10",

@@ -16,9 +16,6 @@ export class LocalCoordinator {
   public localAdapter: DatabaseAdapter;
   private encryptionConfig?: EncryptionConfig;
   private readonly LOCAL_CHANGES_STORE = 'local_changes'; // 独立的变更表，记录所有数据修改
-  private readonly SYNC_META_STORE = 'local_sync_meta'; // 存储同步元数据
-  private readonly VERSION_KEY = 'current_version';    // 当前的数据版本号
-  private versionInitialized: boolean = false; // 标记是否已初始化
 
 
   constructor(localAdapter: DatabaseAdapter, encryptionConfig?: EncryptionConfig) {
@@ -44,13 +41,12 @@ export class LocalCoordinator {
       _version: item._version || now, // 保留原始版本号（如果有）
     }));
     const result = await this.localAdapter.putBulk(storeName, updatedItems);
-    // 记录变更，但根据参数决定是否自增版本号
     for (const item of updatedItems) {
       await this.trackChange(
         storeName,
         item,
         'put',
-        false, // 跳过版本号自增
+        skipVersionIncrement,
       );
     }
     return result;
@@ -108,23 +104,18 @@ export class LocalCoordinator {
     // 应用数据变更（使用现有版本号）
     for (const [storeName, storeChanges] of changesByStore.entries()) {
       if (storeChanges.puts.length > 0) {
+        console.log(`写入数据到本地`);
         await this.putBulk(storeName, storeChanges.puts, true);  // 跳过版本号自增
       }
       if (storeChanges.deletes.length > 0) {
+        console.log(`删除数据到本地`);
         await this.deleteBulk(storeName, storeChanges.deletes, true);  // 跳过版本号自增
-      }
-    }
-    // 更新本地版本号（如果有变更且版本号更高）
-    if (changes.length > 0 && maxVersion > 0) {
-      const currentVersion = await this.getCurrentVersion();
-      if (maxVersion > currentVersion) {
-        await this.persistVersion(maxVersion);
       }
     }
   }
 
 
-  // 获取待同步的变更记录
+  // 获取待同步的变更记录  待修复
   async getPendingChanges(since: number, limit: number = 100): Promise<DataChange[]> {
     const result = await this.localAdapter.read<LocalChangeRecord>(this.LOCAL_CHANGES_STORE, {
       since: since,
@@ -136,24 +127,26 @@ export class LocalCoordinator {
     const fullChanges: DataChange[] = [];
     for (const change of localChanges) {
       if (change.type === 'put') {
-        const items = await this.localAdapter.readBulk<BaseModel>(change._store, [change.originalId]);
-        if (items.length > 0) {
-          fullChanges.push({
-            _delta_id: change._delta_id,
-            _store: change._store,
-            _version: change._version,
-            type: change.type,
-            data: { ...items[0], _store: change._store }
-          });
-        } else {
-          fullChanges.push({
-            _store: change._store,
-            _version: change._version,
-            _delta_id: change._delta_id,
-            type: 'delete'
-          });
+        try {
+          const items = await this.localAdapter.readBulk<BaseModel>(change._store, [change.originalId]);
+          console.log(`查询结果: 找到${items.length}条数据`);
+          if (items.length > 0) {
+            fullChanges.push({
+              _delta_id: change._delta_id,
+              _store: change._store,
+              _version: change._version,
+              type: change.type,
+              data: { ...items[0], _store: change._store }
+            });
+          } else {
+            console.warn(`无法找到原始数据: store=${change._store}, id=${change.originalId}`);
+          }
+        } catch (error) {
+          console.error(`处理变更记录时出错:`, error);
+          // 异常处理
         }
       } else {
+        // 对于delete操作，直接添加到结果中
         fullChanges.push({
           _delta_id: change._delta_id,
           _store: change._store,
@@ -312,10 +305,10 @@ export class LocalCoordinator {
 
   // 记录完整的数据变更历史
   private async trackChange<T extends BaseModel>(
-    storeName: string,//原始的变更记录
+    storeName: string,
     data: T,
     operationType: SyncOperationType,
-    skipVersionIncrement: boolean = false // 是否跳过版本号自增，默认为false
+    skipVersionIncrement: boolean = false
   ): Promise<void> {
     const syncId = getSyncId(storeName, data._delta_id);
     const version = skipVersionIncrement && data._version ?
@@ -323,7 +316,7 @@ export class LocalCoordinator {
       await this.nextVersion();
     const changeRecord: LocalChangeRecord = {
       _delta_id: syncId,
-      _store: storeName,
+      _store: storeName,  // 确保这里存储的是原始store名称
       _version: version,
       type: operationType,
       originalId: data._delta_id
@@ -333,18 +326,11 @@ export class LocalCoordinator {
   }
 
 
-
   async nextVersion(): Promise<number> {
     try {
-      // 直接从数据库读取最新版本号，而不依赖内存缓存
-      const items = await this.localAdapter.readBulk<{ _delta_id: string, value: number }>(
-        this.SYNC_META_STORE,
-        [this.VERSION_KEY]
-      );
-      const currentVersion = items.length > 0 && items[0].value ? items[0].value : 0;
+      // 获取当前最高版本号
+      const currentVersion = await this.getCurrentVersion();
       const newVersion = currentVersion + 1;
-      // 持久化新版本号
-      await this.persistVersion(newVersion);
       return newVersion;
     } catch (error) {
       console.error("生成新版本号失败:", error);
@@ -353,28 +339,22 @@ export class LocalCoordinator {
   }
 
 
-  // 将版本号持久化到数据库
-  async persistVersion(version: number): Promise<void> {
-    try {
-      await this.localAdapter.putBulk(this.SYNC_META_STORE, [{
-        _delta_id: this.VERSION_KEY,
-        value: version,
-        _skip_sync: true
-      }]);
-    } catch (error) {
-      console.error("保存版本号失败:", error);
-      throw error;
-    }
-  }
-
 
   async getCurrentVersion(): Promise<number> {
     try {
-      const items = await this.localAdapter.readBulk<{ _delta_id: string, value: number }>(
-        this.SYNC_META_STORE,
-        [this.VERSION_KEY]
-      );
-      return items.length > 0 && items[0].value ? items[0].value : 0;
+      const totalCount = await this.localAdapter.count(this.LOCAL_CHANGES_STORE);
+      if (totalCount === 0) {
+        return 0;
+      }
+      const result = await this.localAdapter.read<LocalChangeRecord>(this.LOCAL_CHANGES_STORE, {
+        offset: totalCount - 1,
+        limit: 1
+      });
+      if (result.items.length > 0 && result.items[0]._version !== undefined) {
+        console.log(`获取当前版本号: ${result.items[0]._version} (共有${totalCount}条记录)`);
+        return result.items[0]._version;
+      }
+      return 0;
     } catch (error) {
       console.warn("读取版本号失败:", error);
       return 0;

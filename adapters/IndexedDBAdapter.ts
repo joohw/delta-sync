@@ -213,7 +213,6 @@ export class IndexedDBAdapter implements DatabaseAdapter {
             const itemsWithMeta = items.map(item => {
                 return {
                     ...item,
-                    _store: storeName
                 };
             });
             // 批量保存所有项目

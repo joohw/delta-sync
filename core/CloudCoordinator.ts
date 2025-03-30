@@ -12,8 +12,6 @@ import {
 export class CloudCoordinator {
     public cloudAdapter: DatabaseAdapter;
     public readonly CHANGES_STORE = 'cloud_synced_changes'; // 所有变更的存储
-    private readonly META_STORE = 'cloud_synced_meta'; // 元数据存储
-    private readonly VERSION_KEY = 'current_version'; // 最新变更的版本号
 
 
     constructor(cloudAdapter: DatabaseAdapter) {
@@ -32,6 +30,7 @@ export class CloudCoordinator {
     async processPushRequest(changes: DataChange[]): Promise<SyncResponse> {
         try {
             // 获取云端当前最新版本号
+            console.log('处理同步请求...', changes);
             const latestVersionResponse = await this.getLatestVersion();
             const cloudLatestVersion = latestVersionResponse.version || 0;
             // 找出提交的变更中最大和最小的版本号
@@ -49,16 +48,7 @@ export class CloudCoordinator {
                 const count = versionCounts.get(change._version) || 0;
                 versionCounts.set(change._version, count + 1);
             }
-            // 记录创建时间（用于维护目的，但不再作为同步主要依据）
-            const serverTimestamp = Date.now();
-            const changeRecords = changes.map(change => {
-                return {
-                    ...change,
-                    _created_at: serverTimestamp
-                };
-            });
-            await this.cloudAdapter.putBulk(this.CHANGES_STORE, changeRecords);
-            await this.updateLatestVersion(maxVersion);
+            await this.cloudAdapter.putBulk(this.CHANGES_STORE, changes);
             console.log(`推送请求详情:
                         - 云端原始版本: ${cloudLatestVersion}
                         - 推送变更数量: ${changes.length}
@@ -96,10 +86,10 @@ export class CloudCoordinator {
                 }
             }
             console.log(`拉取请求详情:
-        - 客户端请求版本: ${lastSyncVersion}
-        - 云端最新版本: ${latestVersion.version || 0}
-        - 返回变更数量: ${result.items.length}
-        - 返回变更版本范围: ${result.items.length > 0 ? `${Math.min(...result.items.map(c => c._version))} 到 ${maxChangeVersion}` : '无变更'}`);
+                        - 客户端请求版本: ${lastSyncVersion}
+                        - 云端最新版本: ${latestVersion.version || 0}
+                        - 返回变更数量: ${result.items.length}
+                        - 返回变更版本范围: ${result.items.length > 0 ? `${Math.min(...result.items.map(c => c._version))} 到 ${maxChangeVersion}` : '无变更'}`);
             return {
                 success: true,
                 changes: result.items,
@@ -259,35 +249,26 @@ export class CloudCoordinator {
     }
 
 
-    // 更新最新变更版本号
-    async updateLatestVersion(version: number): Promise<void> {
-        try {
-            await this.cloudAdapter.putBulk(this.META_STORE, [{
-                _delta_id: this.VERSION_KEY,
-                value: version
-            }]);
-        } catch (error) {
-            console.error('更新最新版本号失败:', error);
-        }
-    }
 
-
-    // 获取最新数据的时间戳（最近一次同步）
+    // 获取最新变更的版本号
     async getLatestVersion(): Promise<SyncResponse> {
         try {
-            const items = await this.cloudAdapter.readBulk<{ _delta_id: string, value: number }>(
-                this.META_STORE,
-                [this.VERSION_KEY]
-            );
-            if (items.length > 0 && items[0].value) {
-                return {
-                    success: true,
-                    version: items[0].value
-                };
+            // 设置默认版本号
+            let version = 0;
+            const totalCount = await this.cloudAdapter.count(this.CHANGES_STORE);
+            if (totalCount > 0) {
+                const result = await this.cloudAdapter.read<DataChange>(this.CHANGES_STORE, {
+                    offset: totalCount - 1,
+                    limit: 1
+                });
+                if (result.items.length > 0 && result.items[0]._version !== undefined) {
+                    version = result.items[0]._version;
+                }
             }
+            console.log(`获取最新版本号成功: ${version} (共有${totalCount || 0}条记录)`);
             return {
                 success: true,
-                version: 0
+                version
             };
         } catch (error) {
             console.error('获取最新版本号失败:', error);

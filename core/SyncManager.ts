@@ -54,6 +54,8 @@ export class SyncManager {
           version: localVersion
         };
       }
+      // 将变更发送到云端
+      const response = await this.cloudCoordinator.processPushRequest(pendingChanges);
       // 收集需要处理的附件
       const attachmentPositions = new Map<string, {
         changeIndex: number,
@@ -154,18 +156,12 @@ export class SyncManager {
           }
         }
       }
-      // 将变更发送到云端
-      const response = await this.cloudCoordinator.processPushRequest(pendingChanges);
       if (response.success) {
         if (!response.version) {
           return {
             success: false,
             error: '服务器返回无效的版本号'
           };
-        }
-        // 应用可能的远程变更
-        if (response.changes && response.changes.length > 0) {
-          await this.localCoordinator.applyRemoteChange(response.changes);
         }
         return {
           ...response,
@@ -204,16 +200,20 @@ export class SyncManager {
       this.isSyncing = true;
       const localVersion = await this.localCoordinator.getCurrentVersion();
       const response = await this.cloudCoordinator.processPullRequest(localVersion);
-      if (!response.success || !response.changes) {
+      if (!response.success) {
+        console.error('拉取云端的数据失败');
         return response;
       }
-      if (response.changes.length === 0) {
+      if (!response.changes || response.changes.length === 0) {
+        console.log('云端没有新数据');
         return {
           success: true,
           processed: 0,
           version: response.version
-        };
+        }
       }
+      // 应用可能的远程变更
+      await this.localCoordinator.applyRemoteChange(response.changes);
       // 收集需要下载的附件ID
       const attachmentsToDownload = new Set<string>();
       // 处理所有变更
