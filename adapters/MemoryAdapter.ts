@@ -1,5 +1,5 @@
 // core/adapters/memory.ts
-import { DatabaseAdapter, BaseModel, Attachment } from '../core/types';
+import { DatabaseAdapter, DeltaModel, Attachment } from '../core/types';
 
 interface StoredFile {
   _delta_id: string;
@@ -17,7 +17,7 @@ export class MemoryAdapter implements DatabaseAdapter {
     return true;
   }
 
-  async readByVersion<T extends BaseModel>(
+  async readByVersion<T extends DeltaModel>(
     storeName: string,
     options: {
       limit?: number;
@@ -49,7 +49,7 @@ export class MemoryAdapter implements DatabaseAdapter {
     };
   }
 
-  async readBulk<T extends BaseModel>(storeName: string, ids: string[]): Promise<T[]> {
+  async readBulk<T extends DeltaModel>(storeName: string, ids: string[]): Promise<T[]> {
     const store = this.stores.get(storeName) || new Map();
     return ids
       .map(id => store.get(id))
@@ -57,7 +57,7 @@ export class MemoryAdapter implements DatabaseAdapter {
   }
 
 
-  async putBulk<T extends BaseModel>(storeName: string, items: T[]): Promise<T[]> {
+  async putBulk<T extends DeltaModel>(storeName: string, items: T[]): Promise<T[]> {
     if (!items.length) return [];
     const store = this.stores.get(storeName) || new Map();
     this.stores.set(storeName, store);

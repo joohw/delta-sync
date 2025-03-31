@@ -27,7 +27,7 @@ export interface FileItem {
 }
 
 
-export interface BaseModel {
+export interface DeltaModel {
     _delta_id: string;  // 数据实体的唯一标识符（主键）
     _version?: number;// 版本号,由服务端维护
     _store?: string// 所属表名，这个数值不应该被修改
@@ -36,7 +36,7 @@ export interface BaseModel {
 
 
 // 元数据
-export interface MetaItem extends Omit<BaseModel, '_store'> {
+export interface MetaItem extends Omit<DeltaModel, '_store'> {
     _store?: string;
     value: any;
 }
@@ -60,12 +60,12 @@ export const DEFAULT_QUERY_OPTIONS: QueryOptions = {
 // 数据库适配器,支持任意类型的数据库
 export interface DatabaseAdapter {
     isAvailable(): Promise<boolean>;
-    readByVersion<T extends BaseModel>(
+    readByVersion<T extends DeltaModel>(
         storeName: string,
         options?: QueryOptions
     ): Promise<{ items: T[]; hasMore: boolean }>;
-    readBulk<T extends BaseModel>(storeName: string, ids: string[]): Promise<T[]>;
-    putBulk<T extends BaseModel>(storeName: string, items: T[]): Promise<T[]>;
+    readBulk<T extends DeltaModel>(storeName: string, ids: string[]): Promise<T[]>;
+    putBulk<T extends DeltaModel>(storeName: string, items: T[]): Promise<T[]>;
     deleteBulk(storeName: string, ids: string[]): Promise<void>;
     // 读写文件相关的操作
     readFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>>;

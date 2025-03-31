@@ -2,7 +2,7 @@
 // 本地的协调层，包装数据库适配器同时提供自动化的变更记录
 
 import {
-  BaseModel,
+  DeltaModel,
   DatabaseAdapter,
   DataChange,
   SyncOperationType,
@@ -12,7 +12,7 @@ import {
 } from './types';
 import { EncryptionConfig } from './SyncConfig'
 
-interface VersionState extends BaseModel {
+interface VersionState extends DeltaModel {
   value: number;
 }
 
@@ -33,7 +33,7 @@ export class LocalCoordinator {
 
 
   // 写入数据并自动跟踪变更
-  async putBulk<T extends BaseModel>(
+  async putBulk<T extends DeltaModel>(
     storeName: string,
     items: T[],
     skipTracking: boolean = false
@@ -64,7 +64,7 @@ export class LocalCoordinator {
     ids: string[],
     skipTracking: boolean = false
   ): Promise<void> {
-    const items = await this.localAdapter.readBulk<BaseModel>(storeName, ids);
+    const items = await this.localAdapter.readBulk<DeltaModel>(storeName, ids);
     for (const item of items) {
       if (item._attachments) {
         const attachmentIds = item._attachments
@@ -100,7 +100,7 @@ export class LocalCoordinator {
     metadata: any = {},
   ): Promise<Attachment> {
     // 首先获取原始模型
-    const items = await this.localAdapter.readBulk<BaseModel>(storeName, [modelId]);
+    const items = await this.localAdapter.readBulk<DeltaModel>(storeName, [modelId]);
     if (items.length === 0) {
       throw new Error(`无法找到ID为 ${modelId} 的模型`);
     }
@@ -144,9 +144,9 @@ export class LocalCoordinator {
     storeName: string,
     modelId: string,
     attachmentId: string
-  ): Promise<BaseModel> {
+  ): Promise<DeltaModel> {
     // 1. 首先获取原始模型
-    const items = await this.localAdapter.readBulk<BaseModel>(storeName, [modelId]);
+    const items = await this.localAdapter.readBulk<DeltaModel>(storeName, [modelId]);
     if (items.length === 0) {
       throw new Error(`Cannot find model with ID ${modelId} in store ${storeName}`);
     }
@@ -207,7 +207,7 @@ export class LocalCoordinator {
 
 
   // 记录数据变更
-  private async trackDataChange<T extends BaseModel>(
+  private async trackDataChange<T extends DeltaModel>(
     storeName: string,
     data: T,
     operationType: SyncOperationType,
@@ -231,7 +231,7 @@ export class LocalCoordinator {
 
 
   // 从云端同步数据
-  async applyDataChange<T extends BaseModel>(changes: DataChange<T>[]): Promise<void> {
+  async applyDataChange<T extends DeltaModel>(changes: DataChange<T>[]): Promise<void> {
     console.log('待应用的更改:', changes)
     const changesByStore = new Map<string, { puts: T[], deletes: string[] }>();
     for (const change of changes) {

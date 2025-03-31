@@ -1,7 +1,7 @@
 // tester/FunctionTester.ts
 // Adapter functionality tester - for testing any implementation of the DatabaseAdapter interface
 
-import { DatabaseAdapter, BaseModel } from '../core/types';
+import { DatabaseAdapter, DeltaModel } from '../core/types';
 
 
 export class AdapterFunctionTester {
@@ -112,7 +112,7 @@ export class AdapterFunctionTester {
   async testBasicCrud(): Promise<{ success: boolean; message: string }> {
     try {
       console.log('Testing basic CRUD operations...');
-      const testItem: BaseModel = {
+      const testItem: DeltaModel = {
         _delta_id: `test_item_${Date.now()}`,
         _store: this.testStoreName,
         _version: 1
@@ -154,7 +154,7 @@ export class AdapterFunctionTester {
     try {
       console.log('Testing bulk operations...');
       // Create multiple test items
-      const testItems: BaseModel[] = Array(5).fill(0).map((_, index) => ({
+      const testItems: DeltaModel[] = Array(5).fill(0).map((_, index) => ({
         _delta_id: `bulk_test_${Date.now()}_${index}`,
         _sync_status: 'pending',
         _store: this.testStoreName,

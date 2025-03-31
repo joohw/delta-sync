@@ -1,8 +1,8 @@
 // tester/PerformanceTester.ts
 
-import { DatabaseAdapter, BaseModel, Attachment } from '../core/types';
+import { DatabaseAdapter, DeltaModel, Attachment } from '../core/types';
 
-export interface TestModel extends BaseModel {
+export interface TestModel extends DeltaModel {
  value: string;
  testField?: any;
 }

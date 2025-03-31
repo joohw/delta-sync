@@ -2,7 +2,7 @@
 // Provides a simple and easy-to-use synchronization client API, encapsulating internal synchronization complexity
 
 import {
-    BaseModel,
+    DeltaModel,
     DatabaseAdapter,
     Attachment,
     DataChange,
@@ -162,7 +162,7 @@ export class SyncClient {
 
 
     // Query data
-    async query<T extends BaseModel>(storeName: string, options?: QueryOptions): Promise<T[]> {
+    async query<T extends DeltaModel>(storeName: string, options?: QueryOptions): Promise<T[]> {
         try {
             const result = await this.localAdapter.readByVersion<T>(
                 storeName,
@@ -176,7 +176,7 @@ export class SyncClient {
 
 
     // Save data to specified storage
-    async save<T extends BaseModel>(storeName: string, data: T | T[]): Promise<T[]> {
+    async save<T extends DeltaModel>(storeName: string, data: T | T[]): Promise<T[]> {
         const items = Array.isArray(data) ? data : [data];
         return await this.localCoordinator.putBulk(storeName, items);
     }
@@ -235,7 +235,7 @@ export class SyncClient {
         storeName: string,
         modelId: string,
         attachmentId: string
-    ): Promise<BaseModel> {
+    ): Promise<DeltaModel> {
         if (!storeName) {
             throw new Error('Store name is required');
         }
