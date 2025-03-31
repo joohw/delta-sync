@@ -49,6 +49,11 @@ export class MemoryAdapter implements DatabaseAdapter {
     };
   }
 
+  async readAll<T extends DeltaModel>(storeName: string): Promise<T[]> {
+    const store = this.stores.get(storeName) || new Map();
+    return Array.from(store.values()) as T[];
+  }
+
   async readBulk<T extends DeltaModel>(storeName: string, ids: string[]): Promise<T[]> {
     const store = this.stores.get(storeName) || new Map();
     return ids

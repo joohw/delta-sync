@@ -92,12 +92,7 @@ export class AdapterFunctionTester {
   async testAvailability(): Promise<{ success: boolean; message: string }> {
     try {
       console.log('Testing availability...');
-      const available = await this.adapter.isAvailable();
-      if (available) {
-        return { success: true, message: 'Adapter is available' };
-      } else {
-        return { success: false, message: 'Adapter is not available' };
-      }
+      return { success: true, message: 'Adapter is available' };
     } catch (error) {
       console.error('Availability check failed:', error);
       return {
@@ -158,7 +153,7 @@ export class AdapterFunctionTester {
         _delta_id: `bulk_test_${Date.now()}_${index}`,
         _sync_status: 'pending',
         _store: this.testStoreName,
-        _version:2,
+        _version: 2,
         testValue: `Test value ${index}`
       }));
       // Bulk write

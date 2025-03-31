@@ -59,11 +59,11 @@ export const DEFAULT_QUERY_OPTIONS: QueryOptions = {
 
 // 数据库适配器,支持任意类型的数据库
 export interface DatabaseAdapter {
-    isAvailable(): Promise<boolean>;
     readByVersion<T extends DeltaModel>(
         storeName: string,
         options?: QueryOptions
     ): Promise<{ items: T[]; hasMore: boolean }>;
+    readAll<T extends DeltaModel>(storeName: string): Promise<T[]>;
     readBulk<T extends DeltaModel>(storeName: string, ids: string[]): Promise<T[]>;
     putBulk<T extends DeltaModel>(storeName: string, items: T[]): Promise<T[]>;
     deleteBulk(storeName: string, ids: string[]): Promise<void>;
