@@ -79,6 +79,7 @@ export class CloudCoordinator {
                 this.CHANGES_STORE, 
                 { since }
             );
+            console.log("从云端读取更新成功",result)
             const latestVersion = await this.getLatestVersion();
             return {
                 success: true,

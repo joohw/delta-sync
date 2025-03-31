@@ -4,6 +4,7 @@
 import {
   Attachment,
   FileItem,
+  DataChange,
   AttachmentChange,
 } from './types'
 import { LocalCoordinator } from './LocalCoordinator';
@@ -43,7 +44,7 @@ export class SyncManager {
       this.isSyncing = true;
       console.log("开始推送变更...");
       // 1. 获取本地待推送的附件变更
-      const attachmentChanges = await this.localCoordinator.getPendingAttachmentChanges(cloudVersion, limit);
+      const attachmentChanges = await this.localCoordinator.getPendingAttachmentChanges(localVersion, limit);
       console.log(`待推送的附件变更数量: ${attachmentChanges.length}`);
       // 2. 先处理附件变更
       if (attachmentChanges.length > 0) {
@@ -71,7 +72,7 @@ export class SyncManager {
         console.log("=== 附件变更处理完成 ===");
       }
       // 3. 再处理数据变更
-      const pendingChanges = await this.localCoordinator.getPendingChanges(limit);
+      const pendingChanges = await this.localCoordinator.getPendingChanges(localVersion, limit);
       console.log(`待推送的数据变更数量: ${pendingChanges.length}`);
       if (pendingChanges.length > 0) {
         console.log("=== 开始处理数据变更 ===");
@@ -97,26 +98,29 @@ export class SyncManager {
 
 
 
-  async pullChanges(): Promise<boolean> {
+  async pullChanges(): Promise<{ success: boolean; changes?: DataChange[]; version?: number }> {
     if (this.isSyncing) {
       console.log("同步已在进行中，跳过本次拉取");
-      return false;
+      return { success: false };
     }
     try {
       this.isSyncing = true;
       console.log("开始拉取变更...");
       const localVersion = await this.localCoordinator.getCurrentVersion();
       const cloudVersion = await this.cloudCoordinator.getLatestVersion();
+      
       if (cloudVersion === 0 || cloudVersion <= localVersion) {
         console.log("云端没有更新，无需拉取变更");
-        return true;
+        return { success: true, version: localVersion };
       }
+      
       console.log(`当前本地版本: ${localVersion}, 云端最新版本: ${cloudVersion}`);
+      
       // 1. 拉取附件变更
       const attachmentChanges = await this.cloudCoordinator.getAttachmentChanges(localVersion);
-      console.log(`待拉取的附件变更数量: ${attachmentChanges.length}`);
+      console.log(`获取到 ${attachmentChanges.length}个附件变更`);
+      
       if (attachmentChanges.length > 0) {
-        console.log("=== 开始处理附件变更 ===");
         console.log(`附件变更详情:`,
           attachmentChanges.map(change => ({
             id: change._delta_id,
@@ -128,33 +132,42 @@ export class SyncManager {
         console.log(`附件处理结果:
               - 成功数量: ${result.processed}
               - 失败数量: ${result.failed}
-              - 成功ID: ${result.attachmentIds.processed.join(', ')}
-              - 失败ID: ${result.attachmentIds.failed.join(', ')}`);
+              `);
         await this.localCoordinator.applyAttachmentChanges(attachmentChanges);
-        console.log(`已更新 ${attachmentChanges.length} 个附件变更记录`);
-        console.log("=== 附件变更处理完成 ===");
       }
-      // 2. 拉取数据变更
-      console.log("开始拉取数据变更...");
+
       const response = await this.cloudCoordinator.getPendingChanges(localVersion);
       if (!response.success || !response.changes) {
         console.error("拉取数据变更失败:", response.error);
-        return false;
+        return { success: false };
       }
+
       console.log(`获取到 ${response.changes.length} 个数据变更`);
       if (response.changes.length > 0) {
         await this.localCoordinator.applyDataChange(response.changes);
+        await this.localCoordinator.updateCurrentVersion(cloudVersion);
         console.log(`已应用数据变更，最新版本: ${response.version}`);
+        return {
+          success: true,
+          changes: response.changes,
+          version: cloudVersion
+        };
       }
+
       console.log("拉取变更完成");
-      return true;
+      return { 
+        success: true,
+        changes: [],
+        version: cloudVersion
+      };
     } catch (error) {
       console.error('拉取变更时发生错误:', error);
-      return false;
+      return { success: false };
     } finally {
       this.isSyncing = false;
     }
-  }
+}
+
 
 
   async processAttachmentChanges(

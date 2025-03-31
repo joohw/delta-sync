@@ -36,6 +36,7 @@ export interface SyncClientOptions {
     syncConfig?: Partial<SyncConfig>;  // New: synchronization configuration
     onStatus?: (status: SyncStatus) => void;  // Status change callback
     onDataPull?: (changes: DataChange[]) => void;  // Data pull callback
+    onSynced?: (version: number) => void;  // 修改：接收同步后的版本号
 }
 
 // Synchronization status information
@@ -58,6 +59,7 @@ export class SyncClient {
     private currentSyncStatus: SyncStatus = SyncStatus.Idle;
     private onStatusCallback?: (status: SyncStatus) => void;
     private onDataPullCallback?: (changes: DataChange[]) => void;
+    private onSyncedCallback?: (version: number) => void;
 
     // Create sync client
     constructor(options: SyncClientOptions) {
@@ -86,6 +88,11 @@ export class SyncClient {
     // Set data pull callback
     setDataPullCallback(callback: (changes: DataChange[]) => void): void {
         this.onDataPullCallback = callback;
+    }
+
+
+    setSyncedCallback(callback: (version: number) => void): void {
+        this.onSyncedCallback = callback;
     }
 
     // Update sync configuration
@@ -157,7 +164,10 @@ export class SyncClient {
     // Query data
     async query<T extends BaseModel>(storeName: string, options?: QueryOptions): Promise<T[]> {
         try {
-            const result = await this.localAdapter.readByVersion<T>(storeName, options || DEFAULT_QUERY_OPTIONS);
+            const result = await this.localAdapter.readByVersion<T>(
+                storeName,
+                options || DEFAULT_QUERY_OPTIONS
+            );
             return result.items;
         } catch (error) {
             throw new Error
@@ -225,20 +235,20 @@ export class SyncClient {
         storeName: string,
         modelId: string,
         attachmentId: string
-      ): Promise<BaseModel> {
+    ): Promise<BaseModel> {
         if (!storeName) {
-          throw new Error('Store name is required');
+            throw new Error('Store name is required');
         }
         if (!modelId) {
-          throw new Error('Model ID is required');
+            throw new Error('Model ID is required');
         }
         if (!attachmentId) {
-          throw new Error('Attachment ID is required');
+            throw new Error('Attachment ID is required');
         }
         return this.localCoordinator.detachFile(storeName, modelId, attachmentId);
-      }
+    }
 
-      
+
 
     async sync(): Promise<boolean> {
         if (!this.syncManager) {
@@ -248,7 +258,6 @@ export class SyncClient {
         try {
             // 记录初始状态
             this.updateSyncStatus(SyncStatus.Downloading);
-            // 1. 先从云端拉取更新
             const pullSuccess = await this.pull();
             if (!pullSuccess) {
                 console.error("同步操作中拉取云端数据失败");
@@ -278,6 +287,10 @@ export class SyncClient {
         try {
             this.updateSyncStatus(SyncStatus.Uploading);
             const success = await this.syncManager.pushChanges(this.config.batchSize);
+            if (success && this.onSyncedCallback) {
+                const currentVersion = await this.localCoordinator.getCurrentVersion();
+                this.onSyncedCallback(currentVersion);
+            }
             this.updateSyncStatus(success ? SyncStatus.Idle : SyncStatus.Error);
             return success;
         } catch (error) {
@@ -296,9 +309,15 @@ export class SyncClient {
         }
         try {
             this.updateSyncStatus(SyncStatus.Downloading);
-            const success = await this.syncManager.pullChanges();
-            this.updateSyncStatus(success ? SyncStatus.Idle : SyncStatus.Error);
-            return success;
+            const result = await this.syncManager.pullChanges();
+            if (result.success && this.onSyncedCallback && result.version) {
+                this.onSyncedCallback(result.version);
+            }
+            if (result.success && this.onDataPullCallback && result.changes) {
+                this.onDataPullCallback(result.changes);
+            }
+            this.updateSyncStatus(result.success ? SyncStatus.Idle : SyncStatus.Error);
+            return result.success;
         } catch (error) {
             this.updateSyncStatus(SyncStatus.Error);
             console.error("Pull operation failed:", error);

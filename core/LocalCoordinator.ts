@@ -38,9 +38,10 @@ export class LocalCoordinator {
     items: T[],
     skipTracking: boolean = false
   ): Promise<T[]> {
+    const version = Date.now();
     const updatedItems = items.map(item => ({
       ...item,
-      _version: -1  // 新写入的数据版本号统一为-1
+      _version: version,
     }));
     const result = await this.localAdapter.putBulk(storeName, updatedItems);
     if (!skipTracking) {
@@ -76,9 +77,10 @@ export class LocalCoordinator {
     }
     await this.localAdapter.deleteBulk(storeName, ids);
     if (!skipTracking) {
+      const version = Date.now(); // 使用统一的当前时间戳
       const changes = items.map(item => ({
         _delta_id: item._delta_id,
-        _version: item._version
+        _version: version  // 使用新的时间戳
       }));
       await Promise.all(changes.map(change =>
         this.trackDataChange(storeName, change, 'delete')
@@ -208,45 +210,47 @@ export class LocalCoordinator {
   private async trackDataChange<T extends BaseModel>(
     storeName: string,
     data: T,
-    operationType: SyncOperationType
+    operationType: SyncOperationType,
   ): Promise<void> {
-    const syncId = data._delta_id;
-    // 使用数字时间戳(毫秒)
-    const timestamp = Date.now();
     const changeRecord: DataChange<T> = {
-      _delta_id: syncId,
+      _delta_id: data._delta_id,
       _store: storeName,
-      _version: timestamp,  // 使用数字时间戳
-      type: operationType,
+      _version: data._version || Date.now(),  // 使用数字时间戳
+      _operation: operationType,
       data: operationType === 'put' ? data : undefined,
     };
     await this.localAdapter.putBulk(this.LOCAL_CHANGES_STORE, [changeRecord]);
     console.log(
       `记录待同步变更:
       - 存储: ${storeName}
-      - ID: ${syncId}
+      - ID: ${changeRecord._delta_id}
       - 操作: ${operationType}
-      - 时间: ${timestamp}`  // 日志中展示可读格式
+      - 时间: ${changeRecord._version}`  // 日志中展示可读格式
     );
   }
 
 
   // 从云端同步数据
   async applyDataChange<T extends BaseModel>(changes: DataChange<T>[]): Promise<void> {
+    console.log('待应用的更改:', changes)
     const changesByStore = new Map<string, { puts: T[], deletes: string[] }>();
     for (const change of changes) {
       if (!changesByStore.has(change._store)) {
         changesByStore.set(change._store, { puts: [], deletes: [] });
       }
       const storeChanges = changesByStore.get(change._store)!;
-      if (change.type === 'put' && change.data) {
+      if (change._operation === 'put' && change.data) {
         storeChanges.puts.push(change.data as T);
-      } else if (change.type === 'delete') {
+      } else if (change._operation === 'delete') {
         storeChanges.deletes.push(change._delta_id);
       }
     }
     // 应用数据变更
     for (const [storeName, storeChanges] of changesByStore.entries()) {
+      console.log(`Writing to store ${storeName}:`, {
+        puts: storeChanges.puts,
+        deletes: storeChanges.deletes
+      });
       if (storeChanges.puts.length > 0) {
         await this.localAdapter.putBulk(storeName, storeChanges.puts);
       }
@@ -305,11 +309,12 @@ export class LocalCoordinator {
       const result = await this.localAdapter.readByVersion<DataChange>(
         this.LOCAL_CHANGES_STORE,
         {
-          since: since, 
+          since: since,
           limit,
           order: 'asc'
         }
       );
+      console.log(`获取自 ${since} 依赖的待同步变更: ${result.items.length} 条`);
       return result.items;
     } catch (error) {
       console.error('获取待同步变更失败:', error);
@@ -365,8 +370,8 @@ export class LocalCoordinator {
       // 如果没有记录,初始化为0
       const initialState: VersionState = {
         _delta_id: this.VERSION_KEY,
-        _version: -1,        // BaseModel要求的字段
-        _store: this.META_STORE,  // BaseModel要求的字段
+        _version: 0,
+        _store: this.META_STORE,
         value: 0
       };
       await this.localAdapter.putBulk(this.META_STORE, [initialState]);
