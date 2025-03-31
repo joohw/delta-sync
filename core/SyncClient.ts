@@ -107,13 +107,11 @@ export class SyncClient {
         this.cloudCoordinator = new CloudCoordinator(cloudAdapter);
         try {
             this.updateSyncStatus(SyncStatus.Operating);
-            await this.cloudCoordinator.initialize();
             this.syncManager = new SyncManager(
                 this.localCoordinator,
                 this.cloudCoordinator
             );
             this.updateSyncStatus(SyncStatus.Idle);
-            console.log("Cloud adapter connected, synchronization ready");
         } catch (error) {
             this.updateSyncStatus(SyncStatus.Error);
             console.error("Cloud adapter initialization failed:", error);
@@ -147,15 +145,14 @@ export class SyncClient {
     private async initialize(): Promise<void> {
         try {
             this.updateSyncStatus(SyncStatus.Operating);
-            await this.localCoordinator.initialize();
             this.updateSyncStatus(SyncStatus.Idle);
-
         } catch (error) {
             this.updateSyncStatus(SyncStatus.Error);
             console.error("Local storage initialization failed:", error);
             throw error;
         }
     }
+
 
     // Query data
     async query<T extends BaseModel>(storeName: string, options?: QueryOptions): Promise<T[]> {
@@ -329,7 +326,6 @@ export class SyncClient {
     ): Promise<void> {
         try {
             this.updateSyncStatus(SyncStatus.Maintaining);
-            await this.localCoordinator.performMaintenance();
             this.updateSyncStatus(SyncStatus.Idle);
         } catch (error) {
             this.updateSyncStatus(SyncStatus.Error);

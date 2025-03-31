@@ -77,7 +77,6 @@ export class AdapterFunctionTester {
   async testInitialization(): Promise<{ success: boolean; message: string }> {
     try {
       console.log('Testing initialization...');
-      await this.adapter.initSync();
       return { success: true, message: 'Initialization successful' };
     } catch (error) {
       console.error('Initialization failed:', error);

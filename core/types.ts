@@ -30,7 +30,7 @@ export interface FileItem {
 export interface BaseModel {
     _delta_id: string;  // 数据实体的唯一标识符（主键）
     _store?: string// 所属表名，这个数值不应该被修改
-    _version?: number;// 版本号
+    _version?: number;// 版本号,由服务端维护
     _attachments?: Attachment[]; // 文件附件列表
 }
 
@@ -59,7 +59,6 @@ export const DEFAULT_QUERY_OPTIONS: QueryOptions = {
 
 // 数据库适配器,支持任意类型的数据库
 export interface DatabaseAdapter {
-    initSync(): Promise<void>;
     isAvailable(): Promise<boolean>;
     readByVersion<T extends BaseModel>(storeName: string, options?: QueryOptions): Promise<{ items: T[]; hasMore: boolean }>;
     readBulk<T extends BaseModel>(storeName: string, ids: string[]): Promise<T[]>;
@@ -102,6 +101,7 @@ export interface AttachmentChange {
 // 返回的同步请求模型
 export interface SyncResponse {
     success: boolean;
+    version?: number;    // 服务器端的最新版本号
     error?: string;
     processed?: number;
     changes?: DataChange[];
@@ -109,7 +109,6 @@ export interface SyncResponse {
         attachments_processed?: number;
         attachments_failed?: number;
     };
-    version?: number;
 }
 
 

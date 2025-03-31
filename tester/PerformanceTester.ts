@@ -48,8 +48,6 @@ export class PerformanceTester {
    console.log('=== Starting adapter performance tests ===');
    const results: Record<string, PerformanceResult> = {};
    try {
-     // Initialize adapter
-     await this.adapter.initSync();
      // Basic CRUD performance
      results.singleItemWrite = await this.testSingleItemWrite();
      results.singleItemRead = await this.testSingleItemRead();

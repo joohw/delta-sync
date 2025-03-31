@@ -2,14 +2,9 @@
 // 同步管理器，提供轻量级的同步API，处理本地和远程数据的双向同步
 
 import {
-  BaseModel,
-  SyncResponse,
   Attachment,
-  DataChange,
   FileItem,
   AttachmentChange,
-  getOriginalId,
-  SyncOperationType
 } from './types'
 import { LocalCoordinator } from './LocalCoordinator';
 import { CloudCoordinator } from './CloudCoordinator';
@@ -30,76 +25,136 @@ export class SyncManager {
   }
 
 
-
   async pushChanges(limit: number = 100): Promise<boolean> {
     if (this.isSyncing) {
-        return false;
+      console.log("同步已在进行中，跳过本次推送");
+      return false;
     }
     try {
-        this.isSyncing = true;
-        // 1. 获取本地待推送的附件变更
-        const attachmentChanges = await this.localCoordinator.getPendingAttachmentChanges(0, limit);
-        // 2. 先处理附件变更
-        if (attachmentChanges.length > 0) {
-            console.log(`开始处理 ${attachmentChanges.length} 个附件变更`);
-            // 2.1 处理文件传输
-            const result = await this.processAttachmentChanges('push', attachmentChanges);
-            // 2.2 推送附件变更记录到云端
-            if (result.processed > 0) {
-                await this.cloudCoordinator.processPushAttachmentChanges(
-                    attachmentChanges.filter(change => 
-                        result.attachmentIds.processed.includes(change._delta_id)
-                    )
-                );
-            }
-        }
-        // 3. 再处理数据变更
-        const pendingChanges = await this.localCoordinator.getPendingChanges(0, limit);
-        if (pendingChanges.length > 0) {
-            const response = await this.cloudCoordinator.processPushRequest(pendingChanges);
-            if (!response.success) {
-                return false;
-            }
-        }
-        return true;
-    } catch (error) {
-        console.error('推送变更时出错:', error);
-        return false;
-    } finally {
-        this.isSyncing = false;
-    }
-}
-
-
-
-async pullChanges(): Promise<boolean> {
-  if (this.isSyncing) {
-      return false;
-  }
-
-  try {
-      this.isSyncing = true;
       const localVersion = await this.localCoordinator.getCurrentVersion();
-        // 拉取附件变更，直接获取变更列表
-        const attachmentChanges = await this.cloudCoordinator.getAttachmentChanges(localVersion);
-        if (attachmentChanges.length > 0) {
-            const result = await this.processAttachmentChanges('pull', attachmentChanges);
-        }
-      // 2. 再拉取数据变更
-      const response = await this.cloudCoordinator.processPullRequest(localVersion);
-      if (!response.success || !response.changes) {
-          return false;
+      const cloudVersion = await this.cloudCoordinator.getLatestVersion();
+      console.log(`版本信息:
+            - 本地版本: ${localVersion}
+            - 云端版本: ${cloudVersion}`);
+      if (cloudVersion > localVersion) {
+        console.warn("请先拉取最新的云端版本，才能进行推送");
+        return false;
       }
-      // 3. 应用数据变更到本地
-      await this.localCoordinator.applyRemoteChange(response.changes);
+      this.isSyncing = true;
+      console.log("开始推送变更...");
+      // 1. 获取本地待推送的附件变更
+      const attachmentChanges = await this.localCoordinator.getPendingAttachmentChanges(cloudVersion, limit);
+      console.log(`待推送的附件变更数量: ${attachmentChanges.length}`);
+      // 2. 先处理附件变更
+      if (attachmentChanges.length > 0) {
+        console.log("=== 开始处理附件变更 ===");
+        console.log(`附件变更详情:`,
+          attachmentChanges.map(change => ({
+            id: change._delta_id,
+            version: change._version,
+            type: change.type
+          }))
+        );
+        // 2.1 处理文件传输
+        const result = await this.processAttachmentChanges('push', attachmentChanges);
+        console.log(`附件处理结果:
+                - 成功数量: ${result.processed}
+                - 失败数量: ${result.failed}
+                - 成功ID: ${result.attachmentIds.processed.join(', ')}
+                - 失败ID: ${result.attachmentIds.failed.join(', ')}`);
+        // 2.2 处理附件变更记录
+        await this.localCoordinator.applyAttachmentChanges(attachmentChanges);
+        console.log("本地附件变更记录已更新");
+        // 2.3 推送附件变更记录到云端
+        await this.cloudCoordinator.applyAttachmentChanges(attachmentChanges);
+        console.log(`推送 ${attachmentChanges.length} 个附件变更记录到云端`);
+        console.log("=== 附件变更处理完成 ===");
+      }
+      // 3. 再处理数据变更
+      const pendingChanges = await this.localCoordinator.getPendingChanges(limit);
+      console.log(`待推送的数据变更数量: ${pendingChanges.length}`);
+      if (pendingChanges.length > 0) {
+        console.log("=== 开始处理数据变更 ===");
+        const response = await this.cloudCoordinator.applyChanges(pendingChanges);
+        if (!response.success) {
+          console.error("推送数据变更失败:", response.error);
+          return false;
+        }
+        if (response && response.success && response.version) {
+          await this.localCoordinator.updateCurrentVersion(response.version);
+          console.log(`已更新本地版本到: ${response.version}`);
+        }
+      }
+      console.log("推送变更完成");
       return true;
-  } catch (error) {
-      console.error('拉取变更时出错:', error);
+    } catch (error) {
+      console.error('推送变更时发生错误:', error);
       return false;
-  } finally {
+    } finally {
       this.isSyncing = false;
+    }
   }
-}
+
+
+
+  async pullChanges(): Promise<boolean> {
+    if (this.isSyncing) {
+      console.log("同步已在进行中，跳过本次拉取");
+      return false;
+    }
+    try {
+      this.isSyncing = true;
+      console.log("开始拉取变更...");
+      const localVersion = await this.localCoordinator.getCurrentVersion();
+      const cloudVersion = await this.cloudCoordinator.getLatestVersion();
+      if (cloudVersion === 0 || cloudVersion <= localVersion) {
+        console.log("云端没有更新，无需拉取变更");
+        return true;
+      }
+      console.log(`当前本地版本: ${localVersion}, 云端最新版本: ${cloudVersion}`);
+      // 1. 拉取附件变更
+      const attachmentChanges = await this.cloudCoordinator.getAttachmentChanges(localVersion);
+      console.log(`待拉取的附件变更数量: ${attachmentChanges.length}`);
+      if (attachmentChanges.length > 0) {
+        console.log("=== 开始处理附件变更 ===");
+        console.log(`附件变更详情:`,
+          attachmentChanges.map(change => ({
+            id: change._delta_id,
+            version: change._version,
+            type: change.type
+          }))
+        );
+        const result = await this.processAttachmentChanges('pull', attachmentChanges);
+        console.log(`附件处理结果:
+              - 成功数量: ${result.processed}
+              - 失败数量: ${result.failed}
+              - 成功ID: ${result.attachmentIds.processed.join(', ')}
+              - 失败ID: ${result.attachmentIds.failed.join(', ')}`);
+        await this.localCoordinator.applyAttachmentChanges(attachmentChanges);
+        console.log(`已更新 ${attachmentChanges.length} 个附件变更记录`);
+        console.log("=== 附件变更处理完成 ===");
+      }
+      // 2. 拉取数据变更
+      console.log("开始拉取数据变更...");
+      const response = await this.cloudCoordinator.getPendingChanges(localVersion);
+      if (!response.success || !response.changes) {
+        console.error("拉取数据变更失败:", response.error);
+        return false;
+      }
+      console.log(`获取到 ${response.changes.length} 个数据变更`);
+      if (response.changes.length > 0) {
+        await this.localCoordinator.applyDataChange(response.changes);
+        console.log(`已应用数据变更，最新版本: ${response.version}`);
+      }
+      console.log("拉取变更完成");
+      return true;
+    } catch (error) {
+      console.error('拉取变更时发生错误:', error);
+      return false;
+    } finally {
+      this.isSyncing = false;
+    }
+  }
 
 
   async processAttachmentChanges(

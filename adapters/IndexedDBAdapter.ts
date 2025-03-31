@@ -12,8 +12,9 @@ interface IndexedDBAdapterOptions {
 export class IndexedDBAdapter implements DatabaseAdapter {
 
     // 添加表名常量
-    private readonly LOCAL_CHANGES_STORE = 'local_data_changes';           // 数据变更表
-    private readonly ATTACHMENT_CHANGES_STORE = 'local_attachment_changes'; // 附件变更表
+    private readonly LOCAL_CHANGES_STORE = 'local_data_changes';           
+    private readonly ATTACHMENT_CHANGES_STORE = 'local_attachment_changes'; 
+    private readonly META_STORE = 'local_meta';                           // 新增meta表
     private readonly FILES_STORE = '_files';
 
     private db: IDBDatabase | null = null;
@@ -117,28 +118,43 @@ export class IndexedDBAdapter implements DatabaseAdapter {
 
     // 创建必要的存储
     private createRequiredStores(db: IDBDatabase, oldVersion: number): void {
+        // 创建meta存储，用于存储各种元数据
+        if (!db.objectStoreNames.contains(this.META_STORE)) {
+            const metaStore = db.createObjectStore(this.META_STORE, { 
+                keyPath: '_delta_id'  // 使用_delta_id作为主键
+            });
+            // 为meta表创建必要的索引
+            metaStore.createIndex('_version', '_version', { unique: false });
+            metaStore.createIndex('type', 'type', { unique: false });
+            metaStore.createIndex('updatedAt', 'updatedAt', { unique: false });
+        }
         // 创建文件存储
         if (!db.objectStoreNames.contains(this.FILES_STORE)) {
-            const fileStore = db.createObjectStore(this.FILES_STORE, { keyPath: '_delta_id' });
+            const fileStore = db.createObjectStore(this.FILES_STORE, { 
+                keyPath: '_delta_id' 
+            });
             fileStore.createIndex('createdAt', 'createdAt', { unique: false });
             fileStore.createIndex('updatedAt', 'updatedAt', { unique: false });
         }
-        
         // 创建数据变更记录存储
         if (!db.objectStoreNames.contains(this.LOCAL_CHANGES_STORE)) {
-            const dataChangesStore = db.createObjectStore(this.LOCAL_CHANGES_STORE, { keyPath: '_delta_id' });
+            const dataChangesStore = db.createObjectStore(this.LOCAL_CHANGES_STORE, { 
+                keyPath: '_delta_id' 
+            });
             dataChangesStore.createIndex('_version', '_version', { unique: false });
         }
-        
         // 创建附件变更记录存储
         if (!db.objectStoreNames.contains(this.ATTACHMENT_CHANGES_STORE)) {
-            const attachmentChangesStore = db.createObjectStore(this.ATTACHMENT_CHANGES_STORE, { keyPath: '_delta_id' });
+            const attachmentChangesStore = db.createObjectStore(this.ATTACHMENT_CHANGES_STORE, { 
+                keyPath: '_delta_id' 
+            });
             attachmentChangesStore.createIndex('_version', '_version', { unique: false });
         }
-    
         // 创建笔记存储
         if (!db.objectStoreNames.contains('notes')) {
-            const noteStore = db.createObjectStore('notes', { keyPath: '_delta_id' });
+            const noteStore = db.createObjectStore('notes', { 
+                keyPath: '_delta_id' 
+            });
             noteStore.createIndex('_version', '_version', { unique: false });
         }
     }
@@ -177,10 +193,12 @@ export class IndexedDBAdapter implements DatabaseAdapter {
                 let request: IDBRequest;
                 // 根据排序顺序和since参数决定游标打开方式
                 if (order === 'desc') {
-                    const range = since > 0 ? IDBKeyRange.upperBound(since, true) : null;
+                    // 降序时，查找小于等于 since 的记录
+                    const range = since > 0 ? IDBKeyRange.upperBound(since) : null;
                     request = versionIndex.openCursor(range, 'prev');
                 } else {
-                    const range = since > 0 ? IDBKeyRange.lowerBound(since, true) : null;
+                    // 升序时，查找大于等于 since 的记录
+                    const range = since > 0 ? IDBKeyRange.lowerBound(since) : null;
                     request = versionIndex.openCursor(range);
                 }
                 request.onsuccess = (event) => {

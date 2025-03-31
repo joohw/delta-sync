@@ -1,7 +1,6 @@
 // core/LocalCoordinator.ts
 // 本地的协调层，包装数据库适配器同时提供自动化的变更记录
 
-
 import {
   BaseModel,
   DatabaseAdapter,
@@ -13,12 +12,18 @@ import {
 } from './types';
 import { EncryptionConfig } from './SyncConfig'
 
+interface VersionState extends BaseModel {
+  value: number;
+}
+
 
 export class LocalCoordinator {
   public localAdapter: DatabaseAdapter;
   private encryptionConfig?: EncryptionConfig;
   private readonly LOCAL_CHANGES_STORE = 'local_data_changes'; // 独立的变更表，记录所有数据修改
   private readonly ATTACHMENT_CHANGES_STORE = 'local_attachment_changes'; // 新增附件变更表
+  private readonly META_STORE = 'local_meta'; // 改为更通用的meta存储表
+  private readonly VERSION_KEY = 'sync_version'; // 修改key名使其更明确
 
 
   constructor(localAdapter: DatabaseAdapter, encryptionConfig?: EncryptionConfig) {
@@ -26,21 +31,16 @@ export class LocalCoordinator {
     this.encryptionConfig = encryptionConfig;
   }
 
-  async initialize(): Promise<void> {
-    await this.localAdapter.initSync();
-  }
-
 
   // 写入数据并自动跟踪变更
   async putBulk<T extends BaseModel>(
     storeName: string,
     items: T[],
-    skipTracking: boolean = false  // 是否跳过变更跟踪，默认为false
+    skipTracking: boolean = false
   ): Promise<T[]> {
-    const nextVersion = await this.nextVersion();
     const updatedItems = items.map(item => ({
       ...item,
-      _version: nextVersion // 添加版本号
+      _version: -1  // 新写入的数据版本号统一为-1
     }));
     const result = await this.localAdapter.putBulk(storeName, updatedItems);
     if (!skipTracking) {
@@ -204,51 +204,48 @@ export class LocalCoordinator {
   }
 
 
-  // 记录变更，包括附件的变更
+  // 记录数据变更
   private async trackDataChange<T extends BaseModel>(
     storeName: string,
     data: T,
     operationType: SyncOperationType
   ): Promise<void> {
     const syncId = data._delta_id;
-    const version = await this.nextVersion();
-    // 直接记录变更，不判断同步状态
+    // 使用数字时间戳(毫秒)
+    const timestamp = Date.now();
     const changeRecord: DataChange<T> = {
       _delta_id: syncId,
       _store: storeName,
-      _version: version,
+      _version: timestamp,  // 使用数字时间戳
       type: operationType,
       data: operationType === 'put' ? data : undefined,
     };
     await this.localAdapter.putBulk(this.LOCAL_CHANGES_STORE, [changeRecord]);
     console.log(
-      `记录变更：storeName=${storeName}, ` +
-      `id=${syncId}, ` +
-      `version=${version}, ` +
-      `operation=${operationType}`
+      `记录待同步变更:
+      - 存储: ${storeName}
+      - ID: ${syncId}
+      - 操作: ${operationType}
+      - 时间: ${timestamp}`  // 日志中展示可读格式
     );
   }
 
 
   // 从云端同步数据
-  async applyRemoteChange<T extends BaseModel>(changes: DataChange<T>[]): Promise<void> {
+  async applyDataChange<T extends BaseModel>(changes: DataChange<T>[]): Promise<void> {
     const changesByStore = new Map<string, { puts: T[], deletes: string[] }>();
-    // 1. 处理和分类变更
     for (const change of changes) {
       if (!changesByStore.has(change._store)) {
         changesByStore.set(change._store, { puts: [], deletes: [] });
       }
       const storeChanges = changesByStore.get(change._store)!;
       if (change.type === 'put' && change.data) {
-        storeChanges.puts.push({
-          ...change.data,
-          _version: change._version
-        } as T);
+        storeChanges.puts.push(change.data as T);
       } else if (change.type === 'delete') {
         storeChanges.deletes.push(change._delta_id);
       }
     }
-    // 2. 应用数据变更
+    // 应用数据变更
     for (const [storeName, storeChanges] of changesByStore.entries()) {
       if (storeChanges.puts.length > 0) {
         await this.localAdapter.putBulk(storeName, storeChanges.puts);
@@ -257,29 +254,68 @@ export class LocalCoordinator {
         await this.localAdapter.deleteBulk(storeName, storeChanges.deletes);
       }
     }
-    // 3. 保存所有变更记录（包括put和delete），并标记为已同步
-    const markedChanges = changes.map(change => ({
-      ...change,
-      _synced: true // 标记所有变更记录为已同步
-    }));
-    await this.localAdapter.putBulk(this.LOCAL_CHANGES_STORE, markedChanges);
+  }
+
+
+
+  async applyAttachmentChanges(changes: AttachmentChange[]): Promise<void> {
+    try {
+      // 按照版本号排序
+      const sortedChanges = [...changes].sort((a, b) =>
+        (a._version || 0) - (b._version || 0)
+      );
+      // 记录成功处理的变更，以便后续更新状态
+      const processedChanges: AttachmentChange[] = [];
+      for (const change of sortedChanges) {
+        try {
+          // 标记为已同步
+          const markedChange = {
+            ...change,
+            _synced: true
+          };
+          // 保存变更记录到本地附件变更表
+          await this.localAdapter.putBulk(
+            this.ATTACHMENT_CHANGES_STORE,
+            [markedChange]
+          );
+          processedChanges.push(markedChange);
+          console.log(
+            `应用附件变更：attachmentId=${change._delta_id}, ` +
+            `version=${change._version}, ` +
+            `type=${change.type}`
+          );
+        } catch (error) {
+          console.error(
+            `处理附件变更失败: attachmentId=${change._delta_id}`,
+            error
+          );
+        }
+      }
+    } catch (error) {
+      console.error('应用附件变更时发生错误:', error);
+      throw error;
+    }
   }
 
 
 
   // 获取待同步的变更记录
   async getPendingChanges(since: number, limit: number = 100): Promise<DataChange[]> {
-    const result = await this.localAdapter.readByVersion<DataChange>(
-      this.LOCAL_CHANGES_STORE,
-      {
-        since: since,
-        limit: limit,
-        order: 'asc'
-      }
-    );
-    return result.items;
+    try {
+      const result = await this.localAdapter.readByVersion<DataChange>(
+        this.LOCAL_CHANGES_STORE,
+        {
+          since: since, 
+          limit,
+          order: 'asc'
+        }
+      );
+      return result.items;
+    } catch (error) {
+      console.error('获取待同步变更失败:', error);
+      return [];
+    }
   }
-
 
 
   // 获取待同步的附件变更
@@ -298,85 +334,48 @@ export class LocalCoordinator {
 
 
 
-  async nextVersion(): Promise<number> {
+  async updateCurrentVersion(timestamp: number): Promise<void> {
     try {
-      const currentVersion = await this.getCurrentVersion();
-      const newVersion = currentVersion + 1;
-      return newVersion;
+      if (!Number.isInteger(timestamp) || timestamp < 0) {
+        throw new Error("时间戳必须是一个有效的正整数");
+      }
+      await this.localAdapter.putBulk(this.META_STORE, [{
+        _delta_id: this.VERSION_KEY,
+        value: timestamp
+      }]);
+      console.log(`成功更新同步时间戳: ${timestamp}`);
     } catch (error) {
-      console.error("生成新版本号失败:", error);
-      throw new Error(`版本号更新失败: ${error instanceof Error ? error.message : String(error)}`);
+      console.error("更新同步时间戳失败:", error);
+      throw new Error(`更新同步时间戳失败: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+
 
 
   // 获取当前版本号(Todo优化查询方式)
   async getCurrentVersion(): Promise<number> {
     try {
-      const result = await this.localAdapter.readByVersion<DataChange>(
-        this.LOCAL_CHANGES_STORE,
-        {
-          limit: 1,
-          order: 'desc' // 直接使用倒序排列
-        }
+      const result = await this.localAdapter.readBulk<VersionState>(
+        this.META_STORE,
+        [this.VERSION_KEY]
       );
-      if (result.items.length > 0 && result.items[0]._version !== undefined) {
-        return result.items[0]._version;
+      if (result.length > 0) {
+        return result[0].value;
       }
+      // 如果没有记录,初始化为0
+      const initialState: VersionState = {
+        _delta_id: this.VERSION_KEY,
+        _version: -1,        // BaseModel要求的字段
+        _store: this.META_STORE,  // BaseModel要求的字段
+        value: 0
+      };
+      await this.localAdapter.putBulk(this.META_STORE, [initialState]);
       return 0;
     } catch (error) {
-      console.warn("读取版本号失败:", error);
+      console.warn("读取同步时间戳失败:", error);
       return 0;
     }
   }
-
-
-
-  // 维护方法,清理旧的变更记录
-  async performMaintenance(): Promise<void> {
-    console.log("开始执行本地维护任务");
-    let offset = 0;
-    let hasMore = true;
-    const batchSize = 1000;
-    const recordsToDelete: string[] = [];
-    // 分批处理所有变更记录
-    while (hasMore) {
-      const changesResult = await this.localAdapter.readByVersion<DataChange>(
-        this.LOCAL_CHANGES_STORE,
-        {
-          offset: offset,
-          limit: batchSize
-        }
-      );
-      const changes = changesResult.items;
-      hasMore = changesResult.hasMore;
-      for (const change of changes) {
-        if (change.type === 'delete') continue;
-        const items = await this.localAdapter.readBulk<BaseModel>(
-          change._store,
-          [change._delta_id]
-        );
-        // 如果原始数据不存在，标记此变更记录为待删除
-        if (items.length === 0) {
-          recordsToDelete.push(change._delta_id);
-        }
-      }
-      // 批量删除不一致的变更记录
-      if (recordsToDelete.length > 0) {
-        await this.localAdapter.deleteBulk(this.LOCAL_CHANGES_STORE, recordsToDelete);
-        console.log(`已删除 ${recordsToDelete.length} 条不一致的变更记录`);
-        recordsToDelete.length = 0; // 清空数组
-      }
-      if (changes.length < batchSize) {
-        hasMore = false;
-      } else {
-        offset += changes.length;
-      }
-    }
-    console.log("本地变更记录清理完成");
-  }
-
-
 
 
 }
