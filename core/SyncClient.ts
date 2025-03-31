@@ -54,6 +54,7 @@ export class SyncClient {
     private cloudCoordinator?: CloudCoordinator;
     private syncManager?: SyncManager;
     private config: SyncConfig;
+    public clientStatus: ClientStatus;
     private currentSyncStatus: SyncStatus = SyncStatus.Idle;
     private onStatusCallback?: (status: SyncStatus) => void;
     private onDataPullCallback?: (changes: DataChange[]) => void;
@@ -65,11 +66,15 @@ export class SyncClient {
             this.localAdapter,
             options.encryptionConfig
         );
+        this.clientStatus = {
+            currentVersion: 0,
+            pendingChanges: 0,
+            cloudConfigured: false,
+            syncStatus: SyncStatus.Idle
+        };
         this.onStatusCallback = options.onStatus;
         this.onDataPullCallback = options.onDataPull;
-        // Initialize sync configuration
         this.config = getSyncConfig(options.syncConfig);
-        // Automatically initialize local coordinator
         this.initialize();
     }
 
@@ -175,6 +180,23 @@ export class SyncClient {
         await this.localCoordinator.deleteBulk(storeName, itemIds);
     }
 
+
+    // readSingleFile
+    async readFile(fileId: string): Promise<Blob | ArrayBuffer | null> {
+        if (!fileId) {
+            throw new Error('File ID is required');
+        }
+        try {
+            const filesMap = await this.localCoordinator.localAdapter.readFiles([fileId]);
+            return filesMap.get(fileId) || null;
+        } catch (error) {
+            console.error(`Error reading file ${fileId}:`, error);
+            throw error;
+        }
+    }
+
+
+
     // Attach file to specified model
     async attach(
         storeId: string,
@@ -202,10 +224,24 @@ export class SyncClient {
 
 
     // Detach file from specified model
-    async detach(model: BaseModel, attachmentId: string): Promise<BaseModel> {
-        return this.localCoordinator.detachFile(model, attachmentId);
-    }
+    async detach(
+        storeName: string,
+        modelId: string,
+        attachmentId: string
+      ): Promise<BaseModel> {
+        if (!storeName) {
+          throw new Error('Store name is required');
+        }
+        if (!modelId) {
+          throw new Error('Model ID is required');
+        }
+        if (!attachmentId) {
+          throw new Error('Attachment ID is required');
+        }
+        return this.localCoordinator.detachFile(storeName, modelId, attachmentId);
+      }
 
+      
 
     async sync(): Promise<boolean> {
         if (!this.syncManager) {

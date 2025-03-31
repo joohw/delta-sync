@@ -31,7 +31,6 @@ export interface BaseModel {
     _delta_id: string;  // 数据实体的唯一标识符（主键）
     _store?: string// 所属表名，这个数值不应该被修改
     _version?: number;// 版本号
-    _deleted_at?: number; // 删除时间
     _attachments?: Attachment[]; // 文件附件列表
 }
 
@@ -84,28 +83,18 @@ export interface DataChange<T = any> {
     _delta_id: string;      // 数据实体本身的唯一标识符,由store+原始数据的_delta_id计算
     _store: string;
     _version: number;
+    _synced?: boolean; // 是否已同步过,只在本地使用
     type: SyncOperationType;
     data?: T;   // 发生变更后的完整数据
-    attachmentChanges?: AttachmentChange[]; // 附件变更列表(这次更改导致的附件变更)
 }
 
 
 // 附件变更记录
 export interface AttachmentChange {
-    id: string;      // 附件的唯一标识符，指向二进制数据
-    type: SyncOperationType;     // 操作类型,是put还是删除
-}
-
-
-
-// 轻量级的本地变更记录
-export interface LocalChangeRecord {
     _delta_id: string;       // 变更记录ID
-    _store: string;           // 存储名称
-    _version: number;       // 变更版本号(自增)
-    type: SyncOperationType; // 操作类型
-    originalId: string;      // 原始数据ID
-    attachmentChanges?: AttachmentChange[]; // 附件变更列表(这次更改导致的附件变更)
+    _version: number;
+    _synced?: boolean;      // 是否已同步过
+    type: SyncOperationType;     // 操作类型,是put还是删除
 }
 
 
@@ -128,6 +117,7 @@ export interface SyncResponse {
 export function getChangeId(storeName: string, deltaId: string): string {
     return `${storeName}_${deltaId}`;
 }
+
 
 // 获取change表中的数据对应的原始id
 export function getOriginalId(combinedId: string, storeName: string): string {

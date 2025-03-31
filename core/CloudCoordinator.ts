@@ -13,8 +13,9 @@ import {
 export class CloudCoordinator {
     public cloudAdapter: DatabaseAdapter;
     public readonly CHANGES_STORE = 'cloud_synced_changes'; // 所有变更的存储
+    public readonly ATTACHMENT_CHANGES_STORE = 'cloud_attachment_changes'; // 新增附件变更表
 
-
+    
     constructor(cloudAdapter: DatabaseAdapter) {
         this.cloudAdapter = cloudAdapter;
     }
@@ -68,6 +69,41 @@ export class CloudCoordinator {
         }
     }
 
+
+    async processPushAttachmentChanges(changes: AttachmentChange[]): Promise<SyncResponse> {
+        try {
+            // 获取最大版本号
+            let maxVersion = 0;
+            for (const change of changes) {
+                if (change._version && change._version > maxVersion) {
+                    maxVersion = change._version;
+                }
+            }
+            await this.cloudAdapter.putBulk(this.ATTACHMENT_CHANGES_STORE, changes);
+            return {
+                success: true,
+                processed: changes.length,
+                version: maxVersion, // 返回最大版本号
+                info: {
+                    attachments_processed: changes.length
+                }
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error: this.getErrorMessage(error)
+            };
+        }
+    }
+
+
+    async getAttachmentChanges(since: number): Promise<AttachmentChange[]> {
+        const result = await this.cloudAdapter.readByVersion<AttachmentChange>(
+            this.ATTACHMENT_CHANGES_STORE,
+            { since }
+        );
+        return result.items;
+    }
 
 
     // 处理来自客户端的拉取请求（使用 since 参数表示最小版本号）

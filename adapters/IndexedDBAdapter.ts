@@ -10,16 +10,22 @@ interface IndexedDBAdapterOptions {
 
 
 export class IndexedDBAdapter implements DatabaseAdapter {
+
+    // 添加表名常量
+    private readonly LOCAL_CHANGES_STORE = 'local_data_changes';           // 数据变更表
+    private readonly ATTACHMENT_CHANGES_STORE = 'local_attachment_changes'; // 附件变更表
+    private readonly FILES_STORE = '_files';
+
     private db: IDBDatabase | null = null;
     private dbName: string;
     private initPromise: Promise<void> | null = null;
     private stores: Set<string> = new Set();
-    private fileStoreName: string;
 
     constructor(options: IndexedDBAdapterOptions = {}) {
         this.dbName = options.dbName || 'deltaSyncDB';
-        this.fileStoreName = options.fileStoreName || '_files'; // 默认文件存储名称
     }
+
+    // 文件存储表
 
 
     async isAvailable(): Promise<boolean> {
@@ -45,8 +51,9 @@ export class IndexedDBAdapter implements DatabaseAdapter {
                 request.onsuccess = () => {
                     this.db = request.result;
                     // 检查是否需要升级以创建新存储
-                    if (!this.db.objectStoreNames.contains(this.fileStoreName) ||
-                        !this.db.objectStoreNames.contains('local_changes')) {
+                    if (!this.db.objectStoreNames.contains(this.FILES_STORE) ||
+                        !this.db.objectStoreNames.contains(this.LOCAL_CHANGES_STORE) ||
+                        !this.db.objectStoreNames.contains(this.ATTACHMENT_CHANGES_STORE)) {
                         // 需要升级，关闭连接并重新打开
                         const newVersion = currentVersion + 1;
                         this.db.close();
@@ -111,17 +118,31 @@ export class IndexedDBAdapter implements DatabaseAdapter {
     // 创建必要的存储
     private createRequiredStores(db: IDBDatabase, oldVersion: number): void {
         // 创建文件存储
-        if (!db.objectStoreNames.contains(this.fileStoreName)) {
-            const fileStore = db.createObjectStore(this.fileStoreName, { keyPath: '_delta_id' });
+        if (!db.objectStoreNames.contains(this.FILES_STORE)) {
+            const fileStore = db.createObjectStore(this.FILES_STORE, { keyPath: '_delta_id' });
             fileStore.createIndex('createdAt', 'createdAt', { unique: false });
             fileStore.createIndex('updatedAt', 'updatedAt', { unique: false });
         }
-        // 创建变更记录存储
-        if (!db.objectStoreNames.contains('local_changes')) {
-            const changesStore = db.createObjectStore('local_changes', { keyPath: '_delta_id' });
-            changesStore.createIndex('_version', '_version', { unique: false });
+        
+        // 创建数据变更记录存储
+        if (!db.objectStoreNames.contains(this.LOCAL_CHANGES_STORE)) {
+            const dataChangesStore = db.createObjectStore(this.LOCAL_CHANGES_STORE, { keyPath: '_delta_id' });
+            dataChangesStore.createIndex('_version', '_version', { unique: false });
+        }
+        
+        // 创建附件变更记录存储
+        if (!db.objectStoreNames.contains(this.ATTACHMENT_CHANGES_STORE)) {
+            const attachmentChangesStore = db.createObjectStore(this.ATTACHMENT_CHANGES_STORE, { keyPath: '_delta_id' });
+            attachmentChangesStore.createIndex('_version', '_version', { unique: false });
+        }
+    
+        // 创建笔记存储
+        if (!db.objectStoreNames.contains('notes')) {
+            const noteStore = db.createObjectStore('notes', { keyPath: '_delta_id' });
+            noteStore.createIndex('_version', '_version', { unique: false });
         }
     }
+    
 
 
     private async ensureStore(storeName: string): Promise<void> {
@@ -283,8 +304,8 @@ export class IndexedDBAdapter implements DatabaseAdapter {
         await this.ensureFileStore();
         const result = new Map<string, Blob | ArrayBuffer | null>();
         try {
-            const transaction = this.db!.transaction(this.fileStoreName, 'readonly');
-            const store = transaction.objectStore(this.fileStoreName);
+            const transaction = this.db!.transaction(this.FILES_STORE, 'readonly');
+            const store = transaction.objectStore(this.FILES_STORE);
             const promises = fileIds.map(async (fileId) => {
                 return new Promise<void>((resolve) => {
                     const request = store.get(fileId);
@@ -324,8 +345,8 @@ export class IndexedDBAdapter implements DatabaseAdapter {
         await this.ensureFileStore();
         const attachments: Attachment[] = [];
         try {
-            const transaction = this.db!.transaction(this.fileStoreName, 'readwrite');
-            const store = transaction.objectStore(this.fileStoreName);
+            const transaction = this.db!.transaction(this.FILES_STORE, 'readwrite');
+            const store = transaction.objectStore(this.FILES_STORE);
             const now = Date.now();
             const promises = files.map(async (file) => {
                 return new Promise<void>((resolve) => {
@@ -385,8 +406,8 @@ export class IndexedDBAdapter implements DatabaseAdapter {
         await this.ensureFileStore();
         const result = { deleted: [] as string[], failed: [] as string[] };
         try {
-            const transaction = this.db!.transaction(this.fileStoreName, 'readwrite');
-            const store = transaction.objectStore(this.fileStoreName);
+            const transaction = this.db!.transaction(this.FILES_STORE, 'readwrite');
+            const store = transaction.objectStore(this.FILES_STORE);
             await Promise.all(fileIds.map(async (fileId) => {
                 try {
                     await new Promise<void>((resolve, reject) => {
@@ -426,7 +447,7 @@ export class IndexedDBAdapter implements DatabaseAdapter {
 
 
     private async ensureFileStore(): Promise<void> {
-        await this.ensureStore(this.fileStoreName);
+        await this.ensureStore(this.FILES_STORE);
     }
 
     async close(): Promise<void> {
@@ -453,78 +474,4 @@ export class IndexedDBAdapter implements DatabaseAdapter {
     }
 
 
-    // 提取回退方法以减少代码重复
-    private fallbackReadByVersion<T extends BaseModel>(
-        store: IDBObjectStore,
-        since: number,
-        offset: number,
-        limit: number,
-        order: 'asc' | 'desc',
-        resolve: (value: { items: T[]; hasMore: boolean }) => void,
-        reject: (reason?: any) => void
-    ): void {
-        const items: T[] = [];
-        let skipped = 0;
-        let processed = 0;
-        let hasMore = false;
-        // 使用标准方法打开游标
-        const request = store.openCursor();
-        // 如果需要降序，先收集所有符合条件的项，再排序
-        if (order === 'desc') {
-            const allItems: T[] = [];
-            request.onerror = () => {
-                reject(new Error(`Failed to read data from store`));
-            };
-            request.onsuccess = (event) => {
-                const cursor = (event.target as IDBRequest).result as IDBCursorWithValue;
-                if (cursor) {
-                    const item = cursor.value as T;
-                    const itemVersion = (item as any)._version || 0;
-                    // 如果没有since条件或者版本号小于since (降序时需要小于)
-                    if (!since || itemVersion < since) {
-                        allItems.push(item);
-                    }
-                    cursor.continue();
-                } else {
-                    // 完成数据收集后按版本号排序
-                    allItems.sort((a, b) => ((b as any)._version || 0) - ((a as any)._version || 0));
-                    // 应用offset和limit
-                    for (let i = offset; i < allItems.length && processed < limit; i++) {
-                        items.push(allItems[i]);
-                        processed++;
-                    }
-
-                    hasMore = allItems.length > offset + limit;
-                    resolve({ items, hasMore });
-                }
-            };
-        } else {
-            // 升序处理方式
-            request.onerror = () => {
-                reject(new Error(`Failed to read data from store`));
-            };
-            request.onsuccess = (event) => {
-                const cursor = (event.target as IDBRequest).result as IDBCursorWithValue;
-                if (cursor) {
-                    const item = cursor.value as T;
-                    const itemVersion = (item as any)._version || 0;
-                    if (!since || itemVersion > since) {
-                        if (skipped < offset) {
-                            skipped++;
-                        } else if (processed < limit) {
-                            items.push(item);
-                            processed++;
-                        } else {
-                            hasMore = true;
-                            resolve({ items, hasMore });
-                            return;
-                        }
-                    }
-                    cursor.continue();
-                } else {
-                    resolve({ items, hasMore });
-                }
-            };
-        }
-    }
 }
