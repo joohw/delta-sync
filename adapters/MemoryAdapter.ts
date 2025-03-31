@@ -28,7 +28,6 @@ export class MemoryAdapter implements DatabaseAdapter {
   ): Promise<{ items: T[]; hasMore: boolean }> {
     const store = this.stores.get(storeName) || new Map();
     let items = Array.from(store.values()) as T[];
-    
     if (options.since !== undefined) {
       items = items.filter(item => 
         options.order === 'desc' 
@@ -36,17 +35,14 @@ export class MemoryAdapter implements DatabaseAdapter {
           : (item._version || 0) > options.since!
       );
     }
-
     items.sort((a, b) => 
       options.order === 'desc'
         ? (b._version || 0) - (a._version || 0)
         : (a._version || 0) - (b._version || 0)
     );
-
     const offset = options.offset || 0;
     const limit = options.limit || items.length;
     const paginatedItems = items.slice(offset, offset + limit);
-
     return {
       items: paginatedItems,
       hasMore: offset + limit < items.length
@@ -60,6 +56,7 @@ export class MemoryAdapter implements DatabaseAdapter {
       .filter(item => item !== undefined) as T[];
   }
 
+
   async putBulk<T extends BaseModel>(storeName: string, items: T[]): Promise<T[]> {
     if (!items.length) return [];
     const store = this.stores.get(storeName) || new Map();
@@ -67,7 +64,6 @@ export class MemoryAdapter implements DatabaseAdapter {
     items.forEach(item => {
       store.set(item._delta_id, { ...item });
     });
-
     return [...items];
   }
 
@@ -78,6 +74,7 @@ export class MemoryAdapter implements DatabaseAdapter {
     }
   }
 
+
   async readFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>> {
     return new Map(
       fileIds.map(id => [
@@ -87,15 +84,14 @@ export class MemoryAdapter implements DatabaseAdapter {
     );
   }
 
+
   async saveFiles(files: Array<{ content: Blob | ArrayBuffer | string, fileId: string }>): Promise<Attachment[]> {
     if (!files.length) return [];
-    
     const now = Date.now();
     return files.map(({ content, fileId }) => {
       const fileContent = typeof content === 'string' 
         ? new Blob([content], { type: 'text/plain' })
         : content;
-
       const attachment: Attachment = {
         id: fileId,
         filename: fileId,
@@ -105,7 +101,6 @@ export class MemoryAdapter implements DatabaseAdapter {
         updatedAt: now,
         metadata: {}
       };
-
       this.fileStore.set(fileId, {
         _delta_id: fileId,
         content: fileContent,
@@ -113,10 +108,10 @@ export class MemoryAdapter implements DatabaseAdapter {
         _created_at: now,
         _updated_at: now
       });
-
       return attachment;
     });
   }
+
 
   async deleteFiles(fileIds: string[]): Promise<{ deleted: string[], failed: string[] }> {
     return fileIds.reduce<{ deleted: string[], failed: string[] }>(

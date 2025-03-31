@@ -4,9 +4,7 @@
 import {
     BaseModel,
     DatabaseAdapter,
-    SyncResponse,
     Attachment,
-    FileItem,
     DataChange,
     DEFAULT_QUERY_OPTIONS,
     QueryOptions
@@ -18,6 +16,7 @@ import { EncryptionConfig } from './SyncConfig';
 import { SyncConfig, getSyncConfig } from './SyncConfig';
 import { testAdapterFunctionality } from '../tester/FunctionTester';
 
+
 // Synchronization status enumeration
 export enum SyncStatus {
     Error = -2,        // Error or offline status
@@ -28,6 +27,7 @@ export enum SyncStatus {
     Operating = 3,     // Operation in progress (clearing notes and other special operations)
     Maintaining = 4,   // Maintenance in progress (cleaning old data, optimizing storage)
 }
+
 
 // Sync client options
 export interface SyncClientOptions {
