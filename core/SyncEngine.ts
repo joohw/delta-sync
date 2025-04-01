@@ -1,4 +1,4 @@
-// core/SyncClient.ts
+// core/SyncEngine.ts
 // Provides a simple and easy-to-use synchronization client API, encapsulating internal synchronization complexity
 
 import {
@@ -24,12 +24,11 @@ export enum SyncStatus {
     Uploading = 1,     // Upload synchronization in progress
     Downloading = 2,   // Download synchronization in progress
     Operating = 3,     // Operation in progress (clearing notes and other special operations)
-    Maintaining = 4,   // Maintenance in progress (cleaning old data, optimizing storage)
 }
 
 
 // Sync client initialization options
-export interface SyncClientInitOptions {
+export interface SyncEngineInitOptions {
     localAdapter: DatabaseAdapter;
     encryptionConfig?: EncryptionConfig;
     syncOption?: SyncOptions;  // 将其他选项移到这个对象中
@@ -60,7 +59,7 @@ export interface SyncOptions {
 
 
 // Sync client, providing a simple and easy-to-use API to manage local data and synchronization operations
-export class SyncClient {
+export class SyncEngine {
     private localAdapter: DatabaseAdapter;
     private localCoordinator: LocalCoordinator;
     private cloudCoordinator?: CloudCoordinator;
@@ -91,7 +90,7 @@ export class SyncClient {
 
 
     // Create sync client
-    constructor(options: SyncClientInitOptions) {
+    constructor(options: SyncEngineInitOptions) {
         this.localAdapter = options.localAdapter;
         this.localCoordinator = new LocalCoordinator(
             this.localAdapter,

@@ -91,6 +91,7 @@ const performanceResults = await testAdapterPerformance(adapter, {
 ```
 
 ## 核心架构
+
 适配器层 (Adapter Layer)
 
 DataAdapter 接口：定义了一套通用的数据操作接口，包括读取、写入、删除等基本操作
@@ -103,10 +104,11 @@ SyncCoordinator：客户端协调器，负责跟踪本地数据变更
 CloudCoordinator：服务端协调器，处理来自多个客户端的同步请求
 自动变更记录：任何通过协调层的数据操作都会自动记录变更信息
 
+
 数据版本跟踪 (Version Tracking)
 
-版本号机制：每条数据都附带版本号(_ver)，基于时间戳自动更新
-同步状态标记：通过 _sync_status 字段标记数据的同步状态（已同步/待同步）
+版本号机制：每条数据都附带版本号(_version)，基于时间戳自动更新
+
 
 
 

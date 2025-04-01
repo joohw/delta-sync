@@ -7,7 +7,7 @@ export * from './core/types';
 export * from './core/SyncManager';
 export * from './core/CloudCoordinator';
 export * from './core/LocalCoordinator';
-export * from './core/SyncClient';
+export * from './core/SyncEngine';
 
 // Export adapters
 export * from './adapters/MemoryAdapter';

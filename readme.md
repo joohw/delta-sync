@@ -27,7 +27,7 @@ npm install delta-sync
 ## Basic Usage
 
 ```typescript
-import { SyncClient } from 'delta-sync/core/SyncClient';
+import { SyncEngine } from 'delta-sync/core/SyncEngine';
 import { IndexedDBAdapter } from 'delta-sync/adapters/indexeddb';
 import { RestAdapter } from 'delta-sync/adapters/rest';
 
@@ -35,7 +35,7 @@ import { RestAdapter } from 'delta-sync/adapters/rest';
 const localAdapter = new IndexedDBAdapter('myApp');
 
 // Create sync client
-const syncClient = new SyncClient({
+const syncClient = new SyncEngine({
   localAdapter: localAdapter
 });
 
@@ -72,7 +72,7 @@ await syncClient.sync();
 |-- core
 |   |-- CloudCoordinator.ts
 |   |-- LocalCoordinator.ts
-|   |-- SyncClient.ts
+|   |-- SyncEngine.ts
 |   |-- SyncConfig.ts
 |   |-- SyncManager.ts
 |   `-- types.ts
