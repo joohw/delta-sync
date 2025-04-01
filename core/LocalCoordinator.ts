@@ -79,7 +79,7 @@ export class LocalCoordinator {
     if (!skipTracking) {
       const version = Date.now(); // 使用统一的当前时间戳
       const changes = items.map(item => ({
-        _delta_id: item._delta_id,
+        id: item.id,
         _version: version  // 使用新的时间戳
       }));
       await Promise.all(changes.map(change =>
@@ -190,7 +190,7 @@ export class LocalCoordinator {
     type: SyncOperationType,  // 操作类型
   ): Promise<void> {
     const attachmentChange: AttachmentChange = {
-      _delta_id: attachmentId,
+      id: attachmentId,
       _version: version,
       type: type,
     };
@@ -213,7 +213,7 @@ export class LocalCoordinator {
     operationType: SyncOperationType,
   ): Promise<void> {
     const changeRecord: DataChange<T> = {
-      _delta_id: data._delta_id,
+      id: data.id,
       _store: storeName,
       _version: data._version || Date.now(),  // 使用数字时间戳
       _operation: operationType,
@@ -223,7 +223,7 @@ export class LocalCoordinator {
     console.log(
       `记录待同步变更:
       - 存储: ${storeName}
-      - ID: ${changeRecord._delta_id}
+      - ID: ${changeRecord.id}
       - 操作: ${operationType}
       - 时间: ${changeRecord._version}`  // 日志中展示可读格式
     );
@@ -242,7 +242,7 @@ export class LocalCoordinator {
       if (change._operation === 'put' && change.data) {
         storeChanges.puts.push(change.data as T);
       } else if (change._operation === 'delete') {
-        storeChanges.deletes.push(change._delta_id);
+        storeChanges.deletes.push(change.id);
       }
     }
     // 应用数据变更
@@ -275,7 +275,6 @@ export class LocalCoordinator {
           // 标记为已同步
           const markedChange = {
             ...change,
-            _synced: true
           };
           // 保存变更记录到本地附件变更表
           await this.localAdapter.putBulk(
@@ -284,13 +283,13 @@ export class LocalCoordinator {
           );
           processedChanges.push(markedChange);
           console.log(
-            `应用附件变更：attachmentId=${change._delta_id}, ` +
+            `应用附件变更：attachmentId=${change.id}, ` +
             `version=${change._version}, ` +
             `type=${change.type}`
           );
         } catch (error) {
           console.error(
-            `处理附件变更失败: attachmentId=${change._delta_id}`,
+            `处理附件变更失败: attachmentId=${change.id}`,
             error
           );
         }
@@ -345,7 +344,7 @@ export class LocalCoordinator {
         throw new Error("时间戳必须是一个有效的正整数");
       }
       await this.localAdapter.putBulk(this.META_STORE, [{
-        _delta_id: this.VERSION_KEY,
+        id: this.VERSION_KEY,
         value: timestamp
       }]);
       console.log(`成功更新同步时间戳: ${timestamp}`);
@@ -369,7 +368,7 @@ export class LocalCoordinator {
       }
       // 如果没有记录,初始化为0
       const initialState: VersionState = {
-        _delta_id: this.VERSION_KEY,
+        id: this.VERSION_KEY,
         _version: 0,
         _store: this.META_STORE,
         value: 0

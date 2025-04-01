@@ -108,7 +108,7 @@ export class AdapterFunctionTester {
     try {
       console.log('Testing basic CRUD operations...');
       const testItem: DeltaModel = {
-        _delta_id: `test_item_${Date.now()}`,
+        id: `test_item_${Date.now()}`,
         _store: this.testStoreName,
         _version: 1
       };
@@ -120,15 +120,15 @@ export class AdapterFunctionTester {
       }
       // Read
       console.log('Testing read operation...');
-      const readResult = await this.adapter.readBulk(this.testStoreName, [testItem._delta_id]);
-      if (!readResult || readResult.length !== 1 || readResult[0]._delta_id !== testItem._delta_id) {
+      const readResult = await this.adapter.readBulk(this.testStoreName, [testItem.id]);
+      if (!readResult || readResult.length !== 1 || readResult[0].id !== testItem.id) {
         return { success: false, message: 'Read operation failed' };
       }
       // Delete
       console.log('Testing delete operation...');
-      await this.adapter.deleteBulk(this.testStoreName, [testItem._delta_id]);
+      await this.adapter.deleteBulk(this.testStoreName, [testItem.id]);
       // Verify deletion
-      const afterDeleteResult = await this.adapter.readBulk(this.testStoreName, [testItem._delta_id]);
+      const afterDeleteResult = await this.adapter.readBulk(this.testStoreName, [testItem.id]);
       if (afterDeleteResult && afterDeleteResult.length > 0) {
         return { success: false, message: 'Delete operation failed' };
       }
@@ -150,7 +150,7 @@ export class AdapterFunctionTester {
       console.log('Testing bulk operations...');
       // Create multiple test items
       const testItems: DeltaModel[] = Array(5).fill(0).map((_, index) => ({
-        _delta_id: `bulk_test_${Date.now()}_${index}`,
+        id: `bulk_test_${Date.now()}_${index}`,
         _sync_status: 'pending',
         _store: this.testStoreName,
         _version: 2,
@@ -164,7 +164,7 @@ export class AdapterFunctionTester {
       }
       // Bulk read
       console.log('Testing bulk read...');
-      const ids = testItems.map(item => item._delta_id);
+      const ids = testItems.map(item => item.id);
       const readResult = await this.adapter.readBulk(this.testStoreName, ids);
       if (!readResult || readResult.length !== ids.length) {
         return { success: false, message: 'Bulk read failed' };

@@ -119,7 +119,7 @@ export class PerformanceTester {
    for (let i = 0; i < this.options.iterations; i++) {
      const itemId = `perf_single_write_${Date.now()}_${i}`;
      const item: TestModel = {
-       _delta_id: itemId,
+       id: itemId,
        value: `Test value ${i}`,
      };
      const startTime = performance.now();
@@ -139,7 +139,7 @@ export class PerformanceTester {
    // Create test item first
    const testItemId = `perf_single_read_${Date.now()}`;
    const testItem: TestModel = {
-     _delta_id: testItemId,
+     id: testItemId,
      value: 'Test read value',
    };
    await this.adapter.putBulk(this.testStoreName, [testItem]);
@@ -162,7 +162,7 @@ export class PerformanceTester {
      // Create item to delete
      const itemId = `perf_single_delete_${Date.now()}_${i}`;
      const item: TestModel = {
-       _delta_id: itemId,
+       id: itemId,
        value: `Test delete value ${i}`,
      };
      await this.adapter.putBulk(this.testStoreName, [item]);
@@ -184,7 +184,7 @@ export class PerformanceTester {
      for (let i = 0; i < this.options.itemCount; i++) {
        const itemId = `perf_bulk_write_${Date.now()}_${iter}_${i}`;
        items.push({
-         _delta_id: itemId,
+         id: itemId,
          value: `Bulk write test value ${i}`,
        });
        this.createdItemIds.push(itemId);
@@ -208,7 +208,7 @@ export class PerformanceTester {
    for (let i = 0; i < this.options.itemCount; i++) {
      const itemId = `perf_bulk_read_${Date.now()}_${i}`;
      testItems.push({
-       _delta_id: itemId,
+       id: itemId,
        value: `Bulk read test value ${i}`,
      });
      testItemIds.push(itemId);
@@ -236,7 +236,7 @@ export class PerformanceTester {
      for (let i = 0; i < this.options.itemCount; i++) {
        const itemId = `perf_bulk_delete_${Date.now()}_${iter}_${i}`;
        items.push({
-         _delta_id: itemId,
+         id: itemId,
          value: `Bulk delete test value ${i}`,
        });
        itemIds.push(itemId);
@@ -365,7 +365,7 @@ async testPagination(): Promise<PerformanceResult> {
   for (let i = 0; i < this.options.itemCount; i++) {
     const itemId = `perf_pagination_${Date.now()}_${i}`;
     items.push({
-      _delta_id: itemId,
+      id: itemId,
       value: `Pagination test value ${i}`,
     });
     this.createdItemIds.push(itemId);
@@ -405,7 +405,7 @@ async testStress(): Promise<PerformanceResult> {
         // Write operation
         const itemId = `stress_write_${Date.now()}_${i}`;
         const item: TestModel = {
-          _delta_id: itemId,
+          id: itemId,
           value: `Stress test write ${i}`,
         };
         stressItemIds.push(itemId);
@@ -421,7 +421,7 @@ async testStress(): Promise<PerformanceResult> {
         // Delete operation - create then delete
         const itemId = `stress_delete_${Date.now()}_${i}`;
         const item: TestModel = {
-          _delta_id: itemId,
+          id: itemId,
           value: `Stress test delete ${i}`,
         };
         // Ensure creation is complete before deletion to avoid race condition
@@ -494,18 +494,18 @@ async cleanupTestData(): Promise<void> {
       if (result && result.items.length > 0) {
         // Find items that look like test data
         const testItems = result.items.filter(item =>
-          item._delta_id && (
-            item._delta_id.includes('perf_') ||
-            item._delta_id.includes('test_') ||
-            item._delta_id.includes('bulk_') ||
-            item._delta_id.includes('stress_')
+          item.id && (
+            item.id.includes('perf_') ||
+            item.id.includes('test_') ||
+            item.id.includes('bulk_') ||
+            item.id.includes('stress_')
           )
         );
         if (testItems.length > 0) {
           // Delete discovered test items
           await this.adapter.deleteBulk(
             this.testStoreName,
-            testItems.map(item => item._delta_id)
+            testItems.map(item => item.id)
           );
           console.log(`Deleted ${testItems.length} additional test records by scanning`);
         }

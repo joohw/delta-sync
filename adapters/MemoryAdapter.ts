@@ -2,7 +2,7 @@
 import { DatabaseAdapter, DeltaModel, Attachment } from '../core/types';
 
 interface StoredFile {
-  _delta_id: string;
+  id: string;
   content: Blob | ArrayBuffer;
   metadata: Attachment;
   _created_at: number;
@@ -67,7 +67,7 @@ export class MemoryAdapter implements DatabaseAdapter {
     const store = this.stores.get(storeName) || new Map();
     this.stores.set(storeName, store);
     items.forEach(item => {
-      store.set(item._delta_id, { ...item });
+      store.set(item.id, { ...item });
     });
     return [...items];
   }
@@ -107,7 +107,7 @@ export class MemoryAdapter implements DatabaseAdapter {
         metadata: {}
       };
       this.fileStore.set(fileId, {
-        _delta_id: fileId,
+        id: fileId,
         content: fileContent,
         metadata: attachment,
         _created_at: now,

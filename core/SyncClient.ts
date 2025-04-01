@@ -13,14 +13,13 @@ import { LocalCoordinator } from './LocalCoordinator';
 import { CloudCoordinator } from './CloudCoordinator';
 import { SyncManager } from './SyncManager';
 import { EncryptionConfig } from './SyncConfig';
-import { SyncConfig, getSyncConfig } from './SyncConfig';
-import { testAdapterFunctionality } from '../tester/FunctionTester';
+
 
 
 // Synchronization status enumeration
 export enum SyncStatus {
-    Error = -2,        // Error or offline status
-    Offline = -1,      // Error or offline status
+    Error = -2,        // Error status
+    Offline = -1,      // Offline status
     Idle = 0,          // Idle status
     Uploading = 1,     // Upload synchronization in progress
     Downloading = 2,   // Download synchronization in progress
@@ -29,23 +28,35 @@ export enum SyncStatus {
 }
 
 
-// Sync client options
-export interface SyncClientOptions {
+// Sync client initialization options
+export interface SyncClientInitOptions {
     localAdapter: DatabaseAdapter;
     encryptionConfig?: EncryptionConfig;
-    syncConfig?: Partial<SyncConfig>;  // New: synchronization configuration
-    onStatus?: (status: SyncStatus) => void;  // Status change callback
-    onDataPull?: (changes: DataChange[]) => void;  // Data pull callback
-    onSynced?: (version: number) => void;  // 修改：接收同步后的版本号
+    syncOption?: SyncOptions;  // 将其他选项移到这个对象中
 }
 
-// Synchronization status information
-export interface ClientStatus {
-    currentVersion: number;     // Current data version number
-    pendingChanges: number;     // Number of pending changes to be synchronized
-    cloudConfigured: boolean;   // Whether cloud is configured
-    syncStatus: SyncStatus;     // Current synchronization status
+
+
+// Sync client options
+export interface SyncOptions {
+    autoSync?: {
+        enabled?: boolean;
+        interval?: number;
+        retryDelay?: number;
+    };
+    onStatusUpdate?: (status: SyncStatus) => void;
+    onVersionUpdate?: (version: number) => void;
+    onChangePulled?: (changes: DataChange[]) => void;
+    onChangePushed?: (changes: DataChange[]) => void;
+    encryption?: EncryptionConfig;    // 端到端的加密配置
+    maxRetries?: number;    // 最大重试次数
+    timeout?: number;       // 超时时间(毫秒)
+    maxFileSize?: number;   // 最大支持的文件大小(字节)
+    batchSize?: number;     // 同步批次的数量
+    payloadSize?: number;   // 传输的对象最大大小(字节)
+    fileChunkSize?: number; // 文件分块存储的单块大小(字节)
 }
+
 
 
 // Sync client, providing a simple and easy-to-use API to manage local data and synchronization operations
@@ -54,60 +65,132 @@ export class SyncClient {
     private localCoordinator: LocalCoordinator;
     private cloudCoordinator?: CloudCoordinator;
     private syncManager?: SyncManager;
-    private config: SyncConfig;
-    public clientStatus: ClientStatus;
-    private currentSyncStatus: SyncStatus = SyncStatus.Idle;
-    private onStatusCallback?: (status: SyncStatus) => void;
-    private onDataPullCallback?: (changes: DataChange[]) => void;
-    private onSyncedCallback?: (version: number) => void;
+    private syncOptions: SyncOptions = {
+        autoSync: {
+            enabled: false,
+            interval: 30000,
+            retryDelay: 5000
+        },
+        onStatusUpdate: undefined,
+        onVersionUpdate: undefined,
+        onChangePulled: undefined,
+        onChangePushed: undefined,
+        encryption: undefined,
+        maxRetries: 3,
+        timeout: 10000,
+        maxFileSize: 10000000,
+        batchSize: 100,
+        payloadSize: 100000,
+        fileChunkSize: 1000000       // 1MB
+    };
+    private autoSyncTimer?: NodeJS.Timeout;
+    private syncStatus: SyncStatus = SyncStatus.Offline;
+    private currentVersion: number = 0;
+    private cloudConfigured: boolean = false;
+
+
 
     // Create sync client
-    constructor(options: SyncClientOptions) {
+    constructor(options: SyncClientInitOptions) {
         this.localAdapter = options.localAdapter;
         this.localCoordinator = new LocalCoordinator(
             this.localAdapter,
             options.encryptionConfig
         );
-        this.clientStatus = {
-            currentVersion: 0,
-            pendingChanges: 0,
-            cloudConfigured: false,
-            syncStatus: SyncStatus.Idle
-        };
-        this.onStatusCallback = options.onStatus;
-        this.onDataPullCallback = options.onDataPull;
-        this.config = getSyncConfig(options.syncConfig);
+        if (options.syncOption) {
+            this.updateSyncOptions(options.syncOption);
+        }
         this.initialize();
     }
 
-    // Set status change callback
-    setStatusCallback(callback: (status: SyncStatus) => void): void {
-        this.onStatusCallback = callback;
+
+    // Initialize local coordinator
+    private async initialize(): Promise<void> {
+        try {
+            this.updateSyncStatus(SyncStatus.Operating);
+            const version = await this.localCoordinator.getCurrentVersion();
+            this.currentVersion = version;
+            this.updateSyncStatus(SyncStatus.Idle);
+        } catch (error) {
+            this.updateSyncStatus(SyncStatus.Error);
+            console.error("Local storage initialization failed:", error);
+            throw error;
+        }
     }
 
-    // Set data pull callback
-    setDataPullCallback(callback: (changes: DataChange[]) => void): void {
-        this.onDataPullCallback = callback;
+
+    // enableAutoSync
+    public enableAutoSync(interval?: number): void {
+        if (interval) {
+            this.syncOptions.autoSync!.interval = interval;
+        }
+        if (this.syncOptions.autoSync?.enabled) {
+            return;
+        }
+        this.syncOptions.autoSync!.enabled = true;
+        this.scheduleNextSync();
+        console.log(`自动同步已启用，间隔: ${this.syncOptions.autoSync?.interval}ms`);
     }
 
 
-    setSyncedCallback(callback: (version: number) => void): void {
-        this.onSyncedCallback = callback;
+    // disableAutoSync
+    public disableAutoSync(): void {
+        if (this.syncOptions.autoSync) {
+            this.syncOptions.autoSync.enabled = false;
+        }
+        if (this.autoSyncTimer) {
+            clearTimeout(this.autoSyncTimer);
+            this.autoSyncTimer = undefined;
+        }
+        console.log('自动同步已禁用');
     }
 
-    // Update sync configuration
-    updateSyncConfig(config: Partial<SyncConfig>): void {
-        this.config = {
-            ...this.config,
-            ...config
+
+    // scheduleNextSync
+    private async scheduleNextSync(): Promise<void> {
+        if (!this.syncOptions.autoSync?.enabled) {
+            return;
+        }
+        try {
+            const syncResult = await this.sync();
+            if (syncResult) {
+                this.autoSyncTimer = setTimeout(
+                    () => this.scheduleNextSync(),
+                    this.syncOptions.autoSync!.interval
+                );
+            } else {
+                this.autoSyncTimer = setTimeout(
+                    () => this.scheduleNextSync(),
+                    this.syncOptions.autoSync!.retryDelay
+                );
+            }
+        } catch (error) {
+            console.error('自动同步执行失败:', error);
+            this.autoSyncTimer = setTimeout(
+                () => this.scheduleNextSync(),
+                this.syncOptions.autoSync!.retryDelay
+            );
+        }
+    }
+
+
+    // Update synchronization options
+    public updateSyncOptions(options: Partial<SyncOptions>): void {
+        this.syncOptions = {
+            ...this.syncOptions,
+            ...options,
+            autoSync: options.autoSync ? {
+                ...this.syncOptions.autoSync,
+                ...options.autoSync
+            } : this.syncOptions.autoSync
         };
-        console.log("Sync configuration updated:", this.config);
+        if (this.syncOptions.autoSync?.enabled) {
+            this.enableAutoSync();
+        } else if (options.autoSync?.enabled === false) {
+            this.disableAutoSync();
+        }
     }
 
-    // Get current sync configuration
-    getSyncConfig(): SyncConfig {
-        return { ...this.config };
-    }
 
     // Set cloud adapter, enable synchronization functionality
     async setCloudAdapter(cloudAdapter: DatabaseAdapter): Promise<void> {
@@ -118,8 +201,10 @@ export class SyncClient {
                 this.localCoordinator,
                 this.cloudCoordinator
             );
+            this.cloudConfigured = true;
             this.updateSyncStatus(SyncStatus.Idle);
         } catch (error) {
+            this.cloudConfigured = false;
             this.updateSyncStatus(SyncStatus.Error);
             console.error("Cloud adapter initialization failed:", error);
             this.cloudCoordinator = undefined;
@@ -127,36 +212,11 @@ export class SyncClient {
         }
     }
 
-    // Disconnect cloud connection, return to local mode
-    disconnectCloud(): void {
-        this.cloudCoordinator = undefined;
-        this.syncManager = undefined;
-        this.updateSyncStatus(SyncStatus.Offline);
-        console.log("Cloud connection disconnected, now in local mode");
-    }
 
-    // Get current sync status enumeration value
-    getCurrentSyncStatus(): SyncStatus {
-        return this.currentSyncStatus;
-    }
-
-    // Update sync status and trigger callback
     private updateSyncStatus(status: SyncStatus): void {
-        this.currentSyncStatus = status;
-        if (this.onStatusCallback) {
-            this.onStatusCallback(status);
-        }
-    }
-
-    // Initialize local coordinator
-    private async initialize(): Promise<void> {
-        try {
-            this.updateSyncStatus(SyncStatus.Operating);
-            this.updateSyncStatus(SyncStatus.Idle);
-        } catch (error) {
-            this.updateSyncStatus(SyncStatus.Error);
-            console.error("Local storage initialization failed:", error);
-            throw error;
+        this.syncStatus = status;
+        if (this.syncOptions.onStatusUpdate) {
+            this.syncOptions.onStatusUpdate(status);
         }
     }
 
@@ -175,11 +235,14 @@ export class SyncClient {
     }
 
 
+
     // Save data to specified storage
     async save<T extends DeltaModel>(storeName: string, data: T | T[]): Promise<T[]> {
         const items = Array.isArray(data) ? data : [data];
         return await this.localCoordinator.putBulk(storeName, items);
     }
+
+
 
     // Delete data from specified storage
     async delete(storeName: string, ids: string | string[]): Promise<void> {
@@ -256,19 +319,15 @@ export class SyncClient {
             return false;
         }
         try {
-            // 记录初始状态
             this.updateSyncStatus(SyncStatus.Downloading);
             const pullSuccess = await this.pull();
             if (!pullSuccess) {
                 console.error("同步操作中拉取云端数据失败");
                 return false;
             }
-            // 2. 再将本地更改推送到云端
             this.updateSyncStatus(SyncStatus.Uploading);
             const pushSuccess = await this.push();
-            // 3. 根据结果更新状态
             this.updateSyncStatus(pushSuccess ? SyncStatus.Idle : SyncStatus.Error);
-            // 4. 返回综合结果
             return pushSuccess;
         } catch (error) {
             this.updateSyncStatus(SyncStatus.Error);
@@ -286,13 +345,20 @@ export class SyncClient {
         }
         try {
             this.updateSyncStatus(SyncStatus.Uploading);
-            const success = await this.syncManager.pushChanges(this.config.batchSize);
-            if (success && this.onSyncedCallback) {
-                const currentVersion = await this.localCoordinator.getCurrentVersion();
-                this.onSyncedCallback(currentVersion);
+            const result = await this.syncManager.pushChanges();
+            if (result.success) {
+                if (result.version) {
+                    this.currentVersion = result.version;
+                    if (this.syncOptions.onVersionUpdate) {
+                        this.syncOptions.onVersionUpdate(result.version);
+                    }
+                }
+                if (this.syncOptions.onChangePushed && result.changes) {
+                    this.syncOptions.onChangePushed(result.changes);
+                }
             }
-            this.updateSyncStatus(success ? SyncStatus.Idle : SyncStatus.Error);
-            return success;
+            this.updateSyncStatus(result.success ? SyncStatus.Idle : SyncStatus.Error);
+            return result.success;
         } catch (error) {
             this.updateSyncStatus(SyncStatus.Error);
             console.error("Push operation failed:", error);
@@ -310,11 +376,16 @@ export class SyncClient {
         try {
             this.updateSyncStatus(SyncStatus.Downloading);
             const result = await this.syncManager.pullChanges();
-            if (result.success && this.onSyncedCallback && result.version) {
-                this.onSyncedCallback(result.version);
-            }
-            if (result.success && this.onDataPullCallback && result.changes) {
-                this.onDataPullCallback(result.changes);
+            if (result.success) {
+                if (result.version) {
+                    this.currentVersion = result.version;
+                    if (this.syncOptions.onVersionUpdate) {
+                        this.syncOptions.onVersionUpdate(result.version);
+                    }
+                }
+                if (this.syncOptions.onChangePulled && result.changes) {
+                    this.syncOptions.onChangePulled(result.changes);
+                }
             }
             this.updateSyncStatus(result.success ? SyncStatus.Idle : SyncStatus.Error);
             return result.success;
@@ -336,21 +407,22 @@ export class SyncClient {
         return this.localAdapter;
     }
 
-    testLocalAdapter(): void {
-        testAdapterFunctionality(this.localAdapter, "local_adapater_test");
+    // Access underlying cloud coordination layer
+    getSyncOptions(): SyncOptions {
+        return { ...this.syncOptions };
     }
 
-    // Perform maintenance operations, clean up old data
-    async maintenance(
-    ): Promise<void> {
-        try {
-            this.updateSyncStatus(SyncStatus.Maintaining);
-            this.updateSyncStatus(SyncStatus.Idle);
-        } catch (error) {
-            this.updateSyncStatus(SyncStatus.Error);
-            throw error;
-        }
+
+    dispose(): void {
+        this.disableAutoSync();
     }
 
+    // Disconnect cloud connection, return to local mode
+    public disconnectCloud(): void {
+        this.cloudCoordinator = undefined;
+        this.syncManager = undefined;
+        this.updateSyncStatus(SyncStatus.Offline);
+        console.log("Cloud connection disconnected, now in local mode");
+    }
 
 }

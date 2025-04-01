@@ -25,33 +25,37 @@ export class SyncManager {
     this.cloudCoordinator = cloudCoordinator;
   }
 
-
-  async pushChanges(limit: number = 100): Promise<boolean> {
+  async pushChanges(limit: number = 100): Promise<{
+    success: boolean;
+    changes?: DataChange[];
+    version?: number
+  }> {
     if (this.isSyncing) {
       console.log("同步已在进行中，跳过本次推送");
-      return false;
+      return { success: false };
     }
     try {
       const localVersion = await this.localCoordinator.getCurrentVersion();
       const cloudVersion = await this.cloudCoordinator.getLatestVersion();
       console.log(`版本信息:
-            - 本地版本: ${localVersion}
-            - 云端版本: ${cloudVersion}`);
+              - 本地版本: ${localVersion}
+              - 云端版本: ${cloudVersion}`);
+
       if (cloudVersion > localVersion) {
         console.warn("请先拉取最新的云端版本，才能进行推送");
-        return false;
+        return { success: false };
       }
       this.isSyncing = true;
       console.log("开始推送变更...");
       // 1. 获取本地待推送的附件变更
       const attachmentChanges = await this.localCoordinator.getPendingAttachmentChanges(localVersion, limit);
       console.log(`待推送的附件变更数量: ${attachmentChanges.length}`);
-      // 2. 先处理附件变更
+      // 2. 处理附件变更
       if (attachmentChanges.length > 0) {
         console.log("=== 开始处理附件变更 ===");
         console.log(`附件变更详情:`,
           attachmentChanges.map(change => ({
-            id: change._delta_id,
+            id: change.id,
             version: change._version,
             type: change.type
           }))
@@ -59,10 +63,10 @@ export class SyncManager {
         // 2.1 处理文件传输
         const result = await this.processAttachmentChanges('push', attachmentChanges);
         console.log(`附件处理结果:
-                - 成功数量: ${result.processed}
-                - 失败数量: ${result.failed}
-                - 成功ID: ${result.attachmentIds.processed.join(', ')}
-                - 失败ID: ${result.attachmentIds.failed.join(', ')}`);
+                  - 成功数量: ${result.processed}
+                  - 失败数量: ${result.failed}
+                  - 成功ID: ${result.attachmentIds.processed.join(', ')}
+                  - 失败ID: ${result.attachmentIds.failed.join(', ')}`);
         // 2.2 处理附件变更记录
         await this.localCoordinator.applyAttachmentChanges(attachmentChanges);
         console.log("本地附件变更记录已更新");
@@ -71,7 +75,7 @@ export class SyncManager {
         console.log(`推送 ${attachmentChanges.length} 个附件变更记录到云端`);
         console.log("=== 附件变更处理完成 ===");
       }
-      // 3. 再处理数据变更
+      // 3. 处理数据变更
       const pendingChanges = await this.localCoordinator.getPendingChanges(localVersion, limit);
       console.log(`待推送的数据变更数量: ${pendingChanges.length}`);
       if (pendingChanges.length > 0) {
@@ -79,18 +83,30 @@ export class SyncManager {
         const response = await this.cloudCoordinator.applyChanges(pendingChanges);
         if (!response.success) {
           console.error("推送数据变更失败:", response.error);
-          return false;
+          return {
+            success: false,
+            changes: pendingChanges
+          };
         }
-        if (response && response.success && response.version) {
+        if (response.success && response.version) {
           await this.localCoordinator.updateCurrentVersion(response.version);
           console.log(`已更新本地版本到: ${response.version}`);
+          return {
+            success: true,
+            changes: response.changes || pendingChanges,
+            version: response.version
+          };
         }
       }
       console.log("推送变更完成");
-      return true;
+      return {
+        success: true,
+        changes: [],
+        version: localVersion
+      };
     } catch (error) {
       console.error('推送变更时发生错误:', error);
-      return false;
+      return { success: false };
     } finally {
       this.isSyncing = false;
     }
@@ -108,22 +124,19 @@ export class SyncManager {
       console.log("开始拉取变更...");
       const localVersion = await this.localCoordinator.getCurrentVersion();
       const cloudVersion = await this.cloudCoordinator.getLatestVersion();
-      
       if (cloudVersion === 0 || cloudVersion <= localVersion) {
         console.log("云端没有更新，无需拉取变更");
         return { success: true, version: localVersion };
       }
-      
       console.log(`当前本地版本: ${localVersion}, 云端最新版本: ${cloudVersion}`);
-      
       // 1. 拉取附件变更
       const attachmentChanges = await this.cloudCoordinator.getAttachmentChanges(localVersion);
       console.log(`获取到 ${attachmentChanges.length}个附件变更`);
-      
+
       if (attachmentChanges.length > 0) {
         console.log(`附件变更详情:`,
           attachmentChanges.map(change => ({
-            id: change._delta_id,
+            id: change.id,
             version: change._version,
             type: change.type
           }))
@@ -141,11 +154,14 @@ export class SyncManager {
         console.error("拉取数据变更失败:", response.error);
         return { success: false };
       }
-
       console.log(`获取到 ${response.changes.length} 个数据变更`);
       if (response.changes.length > 0) {
         await this.localCoordinator.applyDataChange(response.changes);
-        await this.localCoordinator.updateCurrentVersion(cloudVersion);
+        const syncedVersion = Math.max(
+          ...response.changes.map(change => change._version || 0),
+          ...attachmentChanges.map(change => change._version || 0)
+        );
+        await this.localCoordinator.updateCurrentVersion(syncedVersion);
         console.log(`已应用数据变更，最新版本: ${response.version}`);
         return {
           success: true,
@@ -153,9 +169,8 @@ export class SyncManager {
           version: cloudVersion
         };
       }
-
       console.log("拉取变更完成");
-      return { 
+      return {
         success: true,
         changes: [],
         version: cloudVersion
@@ -166,7 +181,7 @@ export class SyncManager {
     } finally {
       this.isSyncing = false;
     }
-}
+  }
 
 
 
@@ -205,7 +220,7 @@ export class SyncManager {
       // 1. 批量处理删除操作
       const deleteIds = attachmentChanges
         .filter(change => change.type === 'delete')
-        .map(change => change._delta_id);
+        .map(change => change.id);
       if (deleteIds.length > 0) {
         const deleteResult = await targetAdapter.deleteFiles(deleteIds)
           .catch(err => {
@@ -220,7 +235,7 @@ export class SyncManager {
       // 2. 批量处理上传/下载操作
       const transferIds = attachmentChanges
         .filter(change => change.type === 'put')
-        .map(change => change._delta_id);
+        .map(change => change.id);
       if (transferIds.length > 0) {
         // 读取源文件
         const filesMap = await sourceAdapter.readFiles(transferIds)
@@ -277,7 +292,7 @@ export class SyncManager {
         failed: attachmentChanges.length,
         attachmentIds: {
           processed: [],
-          failed: attachmentChanges.map(change => change._delta_id)
+          failed: attachmentChanges.map(change => change.id)
         }
       };
     }

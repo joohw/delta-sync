@@ -23,14 +23,18 @@ export class CloudCoordinator {
     // 处理来自客户端的同步请求
     async applyChanges(changes: DataChange[]): Promise<SyncResponse> {
         try {
-            // 应用变更
-            await this.cloudAdapter.putBulk(this.CHANGES_STORE, changes);
-            // 获取最新版本号
-            const latestVersion = await this.getLatestVersion();
+            // 获取服务器当前时间戳作为版本号
+            const serverTimestamp = Date.now();
+            const updatedChanges = changes.map(change => ({
+                ...change,
+                _version: serverTimestamp
+            }));
+            await this.cloudAdapter.putBulk(this.CHANGES_STORE, updatedChanges);
             return {
                 success: true,
                 processed: changes.length,
-                version: latestVersion  // 使用实际的最新版本号
+                version: serverTimestamp,  // 使用服务器时间戳作为版本号
+                changes: updatedChanges    // 可选：返回更新后的变更记录
             };
         } catch (error: unknown) {
             console.error('处理同步请求时出错:', error);
@@ -40,7 +44,6 @@ export class CloudCoordinator {
             };
         }
     }
-
 
     async applyAttachmentChanges(changes: AttachmentChange[]): Promise<SyncResponse> {
         try {

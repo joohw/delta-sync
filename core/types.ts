@@ -28,7 +28,7 @@ export interface FileItem {
 
 
 export interface DeltaModel {
-    _delta_id: string;  // 数据实体的唯一标识符（主键）
+    id: string;  // 数据实体的唯一标识符（主键）
     _version?: number;// 版本号,由服务端维护
     _store?: string// 所属表名，这个数值不应该被修改
     _attachments?: Attachment[]; // 文件附件列表
@@ -82,7 +82,7 @@ export interface DatabaseAdapter {
 
 // 包含完整数据的变更记录
 export interface DataChange<T = any> {
-    _delta_id: string;      // 数据实体本身的唯一标识符,由store+原始数据的_delta_id计算
+    id: string;      // 数据实体本身的唯一标识符,由store+原始数据的id计算
     _store: string;
     _version: number;
     _operation: SyncOperationType;
@@ -92,9 +92,8 @@ export interface DataChange<T = any> {
 
 // 附件变更记录
 export interface AttachmentChange {
-    _delta_id: string;       // 变更记录ID
+    id: string;       // 变更记录ID
     _version: number;
-    _synced?: boolean;      // 是否已同步过
     type: SyncOperationType;     // 操作类型,是put还是删除
 }
 
@@ -113,20 +112,6 @@ export interface SyncResponse {
     };
 }
 
-
-// 获取用于存储到change表中的名称
-export function getChangeId(storeName: string, deltaId: string): string {
-    return `${storeName}_${deltaId}`;
-}
-
-
-// 获取change表中的数据对应的原始id
-export function getOriginalId(combinedId: string, storeName: string): string {
-    const prefix = `${storeName}_`;
-    return combinedId.startsWith(prefix)
-        ? combinedId.substring(prefix.length)
-        : combinedId;
-}
 
 
 
