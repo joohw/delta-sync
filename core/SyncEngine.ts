@@ -10,7 +10,6 @@ import {
     Attachment,
     FileItem,
     DataItem,
-    DeltaModel,
     SyncResult,
     SyncOperationType,
     SyncQueryOptions,
@@ -95,12 +94,12 @@ export class SyncEngine implements ISyncEngine {
         const items = Array.isArray(data) ? data : [data];
         // 构造 DeltaModel 数组
         const deltaItems = items.map(item => {
-            const deltaModel: DeltaModel<T> = {
+            const deltaModel: DataChange<T> = {
                 id: item.id,
                 store: storeName,
                 data: item.data,
                 version: Date.now(), // 使用当前时间戳作为版本号
-                deleted: false
+                operation: 'put' as SyncOperationType
             };
             return deltaModel;
         });
@@ -320,7 +319,6 @@ export class SyncEngine implements ISyncEngine {
             const batches = this.splitIntoBatches(toDownload, this.options.batchSize!);
             let downloadedCount = 0;
             for (const batch of batches) {
-                // Read from cloud
                 const items = await this.cloudCoordinator.readBulk(
                     batch[0].store,
                     batch.map(item => item.id)
@@ -332,7 +330,7 @@ export class SyncEngine implements ISyncEngine {
                     operation: item.deleted ? 'delete' as SyncOperationType : 'put' as SyncOperationType,
                     data: item.data
                 }));
-                // Report batch progress
+                this.localCoordinator.applyChanges(batchChanges);
                 this.options.onChangePulled?.(batchChanges);
                 downloadedCount += batchChanges.length;
             }
@@ -447,6 +445,11 @@ export class SyncEngine implements ISyncEngine {
         return await this.localCoordinator.getAdapter();
     }
 
+    async getCloudAdapter(): Promise<DatabaseAdapter | undefined> {
+        if (!this.cloudCoordinator) return undefined;
+        return await this.cloudCoordinator.getAdapter();
+    }
+
     // 清理方法
     dispose(): void {
         this.disableAutoSync();
@@ -467,15 +470,9 @@ export class SyncEngine implements ISyncEngine {
         if (this.syncStatus === status) return;
         this.syncStatus = status;
         this.options.onStatusUpdate?.(status);
-        // Log status changes in development
-        if (process.env.NODE_ENV !== 'production') {
-            console.log('Sync status changed to:', SyncStatus[status]);
+        if (process.env.NODE_ENV === 'development') {
+           // console.log('Sync status changed to:', SyncStatus[status]);
         }
-    }
-
-
-    private generateId(): string {
-        return `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     }
 
 

@@ -39,15 +39,6 @@ export interface SyncQueryResult<T = any> {
 }
 
 
-// 数据在本地协调层以DeltaModel的形式存储
-export interface DeltaModel<T = any> {
-    id: string;  // 用于同步的唯一标识符（主键）
-    store: string// 所属表名，这个数值不应该被修改
-    data: T  //数据实体的最新的完整数据
-    deleted?: boolean;  // 是否被删除
-    version: number; // 版本号
-}
-
 
 // 包含完整数据的变更记录
 export interface DataChange<T = any> {
@@ -64,7 +55,6 @@ export interface SyncViewItem {
     store: string;
     version: number;
     deleted?: boolean;      // 标记是否被删除
-    revisionCount?: number;  // 修订版本数量
     isAttachment?: boolean; // 标记是否为附件
 }
 
@@ -151,42 +141,33 @@ export class SyncView {
         }
         return { toDownload, toUpload };
     }
-
-
     // 生成复合键
     private getKey(store: string, id: string): string {
         return `${store}:${id}`;
     }
-
-
     // 删除记录
     delete(store: string, id: string): void {
         const key = this.getKey(store, id);
         this.items.delete(key);
         this.storeIndex.get(store)?.delete(id);
     }
-
     // 获取存储大小
     size(): number {
         return this.items.size;
     }
-
     // 获取特定 store 的记录数量
     storeSize(store: string): number {
         return this.storeIndex.get(store)?.size || 0;
     }
-
     // 清除所有数据
     clear(): void {
         this.items.clear();
         this.storeIndex.clear();
     }
-
     // 序列化视图数据（用于持久化）
     serialize(): string {
         return JSON.stringify(Array.from(this.items.values()));
     }
-
     // 从序列化数据恢复（用于持久化）
     static deserialize(data: string): SyncView {
         const view = new SyncView();
@@ -263,7 +244,7 @@ export interface SyncOptions {
 // 数据库适配器,支持任意类型的数据库
 export interface DatabaseAdapter {
     readStore<T>(storeName: string, limit?: number, offset?: number): Promise<{ items: T[]; hasMore: boolean }>;
-    readBulk<T extends DeltaModel>(storeName: string, ids: string[]): Promise<T[]>;
+    readBulk<T extends DataChange>(storeName: string, ids: string[]): Promise<T[]>;
     putBulk(storeName: string, items: DataItem[]): Promise<any[]>;
     deleteBulk(storeName: string, ids: string[]): Promise<void>;
     readFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>>;
@@ -280,8 +261,8 @@ export interface ICoordinator {
     initSync?: () => Promise<void>;     // 可选：在manager中初始化会执行的函数
     disposeSync?: () => Promise<void>;  // 可选：卸载时执行的函数，清理资源
     getCurrentView(): Promise<SyncView>;
-    readBulk(storeName: string, ids: string[]): Promise<DeltaModel[]>;
-    putBulk(storeName: string, items: DeltaModel[], silent?: boolean): Promise<DeltaModel[]>;
+    readBulk(storeName: string, ids: string[]): Promise<DataChange[]>;
+    putBulk(storeName: string, items: DataChange[], silent?: boolean): Promise<DataChange[]>;
     uploadFiles(files: FileItem[]): Promise<Attachment[]>;
     deleteFiles(fileIds: string[]): Promise<void>;
     onDataChanged(callback: () => void): void; // 改为注册回调函数
@@ -291,7 +272,7 @@ export interface ICoordinator {
     querySync(
         storeName: string,
         options?: SyncQueryOptions
-    ): Promise<SyncQueryResult<DeltaModel>>;
+    ): Promise<SyncQueryResult<DataChange>>;
 }
 
 
@@ -310,7 +291,7 @@ export interface ISyncEngine {
     save<T extends Record<string, any>>(
         storeName: string,                      // 存储名称
         data: DataItem | DataItem[],           // 单个数据项或数据项数组
-    ): Promise<T[]>;    
+    ): Promise<T[]>;
     readFile(fileId: string): Promise<Blob | ArrayBuffer | null>;
     saveFile(fileId: string,
         file: File | Blob | ArrayBuffer,
@@ -327,6 +308,7 @@ export interface ISyncEngine {
     ): Promise<SyncQueryResult<T>>;
     getlocalCoordinator(): Promise<ICoordinator>;
     getlocalAdapter(): Promise<DatabaseAdapter>;
+    getCloudAdapter(): Promise<DatabaseAdapter | undefined>;
     // 清理和断开连接
     dispose(): void;
     disconnectCloud(): void;

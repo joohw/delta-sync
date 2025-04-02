@@ -3,9 +3,9 @@
 import {
     ICoordinator,
     SyncView,
-    DeltaModel,
     FileItem,
     DataChange,
+    SyncOperationType
 } from '../core/types';
 import { MemoryAdapter } from '../core/adapters';
 import { Coordinator } from '../core/Coordinator';
@@ -77,14 +77,16 @@ export class CoordinatorTester {
         const testStore = 'test_store';
 
         // 测试数据准备
-        const testData: DeltaModel[] = [{
+        const testData: DataChange[] = [{
             id: 'test1',
             store: testStore,
             data: { content: 'test content 1' },
+            operation: 'put',
             version: Date.now()
         }, {
             id: 'test2',
             store: testStore,
+            operation: 'put',
             data: { content: 'test content 2' },
             version: Date.now()
         }];
@@ -141,53 +143,53 @@ export class CoordinatorTester {
 
     private async testQueryOperations(): Promise<void> {
         const testStore = 'query_test';
-    
+
         // 清理测试数据
         await this.coordinator.deleteBulk(testStore,
             (await this.coordinator.getCurrentView())
                 .getByStore(testStore)
                 .map(item => item.id)
         );
-    
+
         // 写入测试数据
         const baseVersion = Date.now();
-        const testItems: DeltaModel[] = Array.from({ length: 10 }, (_, i) => ({
+        const testItems: DataChange[] = Array.from({ length: 10 }, (_, i) => ({
             id: `query-test-${i}`,
             store: testStore,
             data: { index: i },
             version: baseVersion + i,
-            deleted: false
+            operation: 'put'
         }));
-    
+
         // 批量写入数据
         await this.coordinator.putBulk(testStore, testItems);
-        
+
         // 测试基本查询功能
         const result = await this.coordinator.querySync(testStore, {
             limit: 5
         });
-    
+
         // 验证返回数量
         if (result.items.length !== 5) {
             throw new Error(`查询数量错误: 期望5条，实际${result.items.length}条`);
         }
-    
+
         // 测试分页
         const pageResult = await this.coordinator.querySync(testStore, {
             offset: 3,
             limit: 3
         });
-    
+
         if (pageResult.items.length !== 3) {
             throw new Error(`分页查询数量错误: 期望3条，实际${pageResult.items.length}条`);
         }
-    
+
         // 测试 since 查询
         const midVersion = baseVersion + 5;
         const sinceResult = await this.coordinator.querySync(testStore, {
             since: midVersion
         });
-    
+
         // 验证版本号筛选
         if (!sinceResult.items.every(item => item.version >= midVersion)) {
             throw new Error('version 筛选错误: 包含了不符合条件的数据');
@@ -205,7 +207,8 @@ export class CoordinatorTester {
             id: 'change-test',
             store: 'test_store',
             data: { content: 'change test' },
-            version: Date.now()
+            version: Date.now(),
+            operation: 'put'
         }]);
 
         // 等待通知
@@ -241,7 +244,8 @@ export class CoordinatorTester {
                 id: `concurrent-${i}`,
                 store: 'concurrent_test',
                 data: { index: i },
-                version: Date.now()
+                version: Date.now(),
+                operation: 'put' as SyncOperationType
             }])
         );
 
@@ -253,11 +257,12 @@ export class CoordinatorTester {
             id: `large-${i}`,
             store: 'large_test',
             data: { index: i },
-            version: Date.now()
+            version: Date.now(),
+            operation: 'put' as SyncOperationType
         }));
-
         await this.coordinator.putBulk('large_test', largeData);
     }
+
 
     private async testEdgeCases(): Promise<void> {
         // 测试空数据
@@ -268,15 +273,16 @@ export class CoordinatorTester {
             id: 'special-!@#$%^&*()',
             store: 'edge_test',
             data: { content: '!@#$%^&*()' },
-            version: Date.now()
+            version: Date.now(),
+            operation: 'put'
         }]);
-
         // 测试大对象
         const largeObject = {
             id: 'large-object',
             store: 'edge_test',
             data: { content: 'x'.repeat(1000000) },
-            version: Date.now()
+            version: Date.now(),
+            operation: 'put' as SyncOperationType
         };
         await this.coordinator.putBulk('edge_test', [largeObject]);
     }

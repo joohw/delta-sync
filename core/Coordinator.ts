@@ -3,7 +3,6 @@
 import {
   ICoordinator,
   DatabaseAdapter,
-  DeltaModel,
   SyncView,
   FileItem,
   Attachment,
@@ -99,9 +98,9 @@ export class Coordinator implements ICoordinator {
 
   async putBulk(
     storeName: string,
-    items: DeltaModel[],
+    items: DataChange[],
     silent: boolean = false
-  ): Promise<DeltaModel[]> {
+  ): Promise<DataChange[]> {
     await this.ensureInitialized();
     try {
       // 确保所有项都有正确的store和version
@@ -109,26 +108,22 @@ export class Coordinator implements ICoordinator {
         ...item,
         store: storeName,  // 确保store正确
         version: item.version || Date.now(),  // 如果没有version则使用当前时间戳
-        deleted: item.deleted || false  // 确保deleted字段存在
+        operation: 'put'
       }));
-
       // 转换为DataItem格式供适配器使用
       const dataItems: DataItem[] = normalizedItems.map(item => ({
         id: item.id,
-        data: item  // 存储完整的DeltaModel
+        data: item  // 存储完整的DataChange
       }));
-
       // 写入数据
       const results = await this.adapter.putBulk(storeName, dataItems);
-      // 将结果转换回DeltaModel格式
       const deltaResults = results.map(result => {
-        // 确保返回的数据符合DeltaModel接口
-        const deltaModel: DeltaModel = {
+        const deltaModel: DataChange = {
           id: result.id,
           store: storeName,
           data: result.data?.data || result.data,
           version: result.version || result.data?.version,
-          deleted: result.deleted || false
+          operation: 'put',
         };
         return deltaModel;
       });
@@ -138,8 +133,6 @@ export class Coordinator implements ICoordinator {
           id: item.id,
           store: storeName,
           version: item.version,
-          deleted: item.deleted,
-          revisionCount: (item as any).revisionCount
         });
       }
       // 如果不是静默操作，触发变更通知
@@ -222,7 +215,7 @@ export class Coordinator implements ICoordinator {
         let offset = 0;
         const limit = 100;
         while (true) {
-          const { items, hasMore } = await this.adapter.readStore<DeltaModel>(
+          const { items, hasMore } = await this.adapter.readStore<DataChange>(
             store,
             limit,
             offset
@@ -233,7 +226,7 @@ export class Coordinator implements ICoordinator {
                 id: item.id,
                 store: store,
                 version: item.version,
-                deleted: item.deleted || false,
+                deleted: item.operation === 'delete',
                 isAttachment: store === SyncView.ATTACHMENT_STORE
               });
             }
@@ -253,15 +246,7 @@ export class Coordinator implements ICoordinator {
 
   // 应用数据变更同时不触发回调
   async applyChanges(changes: DataChange[]): Promise<void> {
-    const version = Date.now();
-    const items = changes.map(change => ({
-      id: change.id,
-      store: change.store,
-      data: change.data,
-      version,
-      deleted: change.operation === 'delete'
-    }));
-    await this.putBulk(changes[0].store, items, true);
+    await this.putBulk(changes[0].store, changes, true);
   }
 
 
@@ -269,7 +254,7 @@ export class Coordinator implements ICoordinator {
   async querySync(
     storeName: string,
     options: SyncQueryOptions = {}
-  ): Promise<SyncQueryResult<DeltaModel>> {
+  ): Promise<SyncQueryResult<DataChange>> {
     await this.ensureInitialized();
     const {
       since = 0,
@@ -277,7 +262,6 @@ export class Coordinator implements ICoordinator {
       limit = 100,
     } = options;
     try {
-      // 1. 获取store的所有items
       let items = this.syncView.getByStore(storeName);
       // 2. 根据since筛选
       if (since > 0) {
@@ -293,8 +277,7 @@ export class Coordinator implements ICoordinator {
       // 5. 映射结果，保持与分页项的顺序一致
       const resultModels = paginatedItems
         .map(item => deltaModels.find(model => model.id === item.id))
-        .filter((model): model is DeltaModel => model !== undefined);
-      // 6. 返回结果
+        .filter((model): model is DataChange => model !== undefined);
       return {
         items: resultModels,
         hasMore: items.length > offset + limit

@@ -2,11 +2,10 @@
 
 import {
   DatabaseAdapter,
-  DeltaModel,
   DataItem,
-  Attachment,
   FileItem
 } from '../core/types';
+
 
 export class AdapterTester {
   private adapter: DatabaseAdapter;
