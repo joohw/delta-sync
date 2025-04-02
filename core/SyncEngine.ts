@@ -5,7 +5,6 @@ import {
     DatabaseAdapter,
     SyncOptions,
     SyncView,
-    SyncViewItem,
     SyncStatus,
     SyncResult,
     SyncQueryOptions,
@@ -100,16 +99,8 @@ export class SyncEngine implements ISyncEngine {
 
 
     // 同步操作方法
-    async sync(): Promise<SyncResult> {
-        if (this.syncStatus !== SyncStatus.IDLE) {
-            return {
-                success: false,
-                error: `Sync already in progress, current status: ${SyncStatus[this.syncStatus]}`,
-                stats: { uploaded: 0, downloaded: 0, errors: 1 }
-            };
-        }
+    async sync(force: boolean = false): Promise<SyncResult> {
         if (!this.cloudCoordinator) {
-            this.updateStatus(SyncStatus.OFFLINE);
             return {
                 success: false,
                 error: 'Cloud adapter not set',
@@ -117,31 +108,20 @@ export class SyncEngine implements ISyncEngine {
             };
         }
         try {
-            // Download phase
-            this.updateStatus(SyncStatus.DOWNLOADING);
-            const pullResult = await this.pull();
-            if (!pullResult.success) {
-                throw new Error(pullResult.error || 'Pull operation failed');
-            }
-            // Upload phase
-            this.updateStatus(SyncStatus.UPLOADING);
-            const pushResult = await this.push();
-            if (!pushResult.success) {
-                throw new Error(pushResult.error || 'Push operation failed');
-            }
-            this.updateStatus(SyncStatus.IDLE);
+            const pullResult = await this.pull(force);
+            const pushResult = await this.push(force);
             return {
-                success: true,
+                success: pullResult.success && pushResult.success,
+                error: pullResult.success ? pushResult.error : pullResult.error,
                 syncedAt: Date.now(),
                 stats: {
                     uploaded: pushResult.stats?.uploaded || 0,
                     downloaded: pullResult.stats?.downloaded || 0,
-                    errors: 0
+                    errors: (pullResult.stats?.errors || 0) + (pushResult.stats?.errors || 0)
                 }
             };
         } catch (error) {
             console.error('Sync failed:', error);
-            this.updateStatus(SyncStatus.ERROR);
             return {
                 success: false,
                 error: error instanceof Error ? error.message : 'Unknown error',
@@ -151,8 +131,7 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
-
-    async push(): Promise<SyncResult> {
+    async push(force: boolean = false): Promise<SyncResult> {
         if (!this.cloudCoordinator) {
             this.updateStatus(SyncStatus.OFFLINE);
             return {
@@ -161,8 +140,14 @@ export class SyncEngine implements ISyncEngine {
                 stats: { uploaded: 0, downloaded: 0, errors: 1 }
             };
         }
+
         try {
             this.updateStatus(SyncStatus.UPLOADING);
+            // 获取本地和云端视图
+            if (force) {
+                await this.cloudCoordinator.refreshView();
+                await this.localCoordinator.refreshView();
+            }
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
             const { toUpload } = SyncView.diffViews(localView, cloudView);
@@ -174,21 +159,15 @@ export class SyncEngine implements ISyncEngine {
                     stats: { uploaded: 0, downloaded: 0, errors: 0 }
                 };
             }
-            // 按store分组处理数据
-            const storeGroups = this.groupByStore(toUpload);
+            const changeSet = await this.localCoordinator.extractChanges(toUpload);
             let uploadedCount = 0;
-            for (const [storeName, items] of storeGroups) {
-                const batches = this.splitIntoBatches(items, this.options.batchSize!);
-                for (const batch of batches) {
-                    const data = await this.localCoordinator.readBulk(
-                        storeName,
-                        batch.map(item => item.id)
-                    );
-                    await this.cloudCoordinator.putBulk(storeName, data);
-                    this.options.onChangePushed?.(data);
-                    uploadedCount += data.length;
-                }
+            for (const itemChanges of changeSet.put.values()) {
+                uploadedCount += itemChanges.length;
             }
+            for (const itemChanges of changeSet.delete.values()) {
+                uploadedCount += itemChanges.length;
+            }
+            await this.cloudCoordinator.applyChanges(changeSet);
             this.updateStatus(SyncStatus.IDLE);
             return {
                 success: true,
@@ -199,8 +178,8 @@ export class SyncEngine implements ISyncEngine {
                     errors: 0
                 }
             };
+
         } catch (error) {
-            console.error('Push failed:', error);
             this.updateStatus(SyncStatus.ERROR);
             return {
                 success: false,
@@ -212,9 +191,7 @@ export class SyncEngine implements ISyncEngine {
 
 
 
-
-
-    async pull(): Promise<SyncResult> {
+    async pull(force: boolean = false): Promise<SyncResult> {
         if (!this.cloudCoordinator) {
             this.updateStatus(SyncStatus.OFFLINE);
             return {
@@ -225,10 +202,12 @@ export class SyncEngine implements ISyncEngine {
         }
         try {
             this.updateStatus(SyncStatus.DOWNLOADING);
-            // Get views
+            if (force) {
+                await this.cloudCoordinator.refreshView();
+                await this.localCoordinator.refreshView();
+            }
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
-            // Calculate differences
             const { toDownload } = SyncView.diffViews(localView, cloudView);
             if (toDownload.length === 0) {
                 this.updateStatus(SyncStatus.IDLE);
@@ -238,18 +217,16 @@ export class SyncEngine implements ISyncEngine {
                     stats: { uploaded: 0, downloaded: 0, errors: 0 }
                 };
             }
-            // Download and process in batches
-            const batches = this.splitIntoBatches(toDownload, this.options.batchSize!);
+            const changeSet = await this.cloudCoordinator.extractChanges(toDownload);
             let downloadedCount = 0;
-            for (const batch of batches) {
-                const items = await this.cloudCoordinator.readBulk(
-                    batch[0].store,
-                    batch.map(item => item.id)
-                );
-                await this.localCoordinator.putBulk(batch[0].store, items);
-                this.options.onChangePulled?.(items);
-                downloadedCount += items.length;
+            for (const itemChanges of changeSet.put.values()) {
+                downloadedCount += itemChanges.length;
             }
+            for (const itemChanges of changeSet.delete.values()) {
+                downloadedCount += itemChanges.length;
+            }
+            // 应用到本地
+            await this.localCoordinator.applyChanges(changeSet);
             this.updateStatus(SyncStatus.IDLE);
             return {
                 success: true,
@@ -261,7 +238,6 @@ export class SyncEngine implements ISyncEngine {
                 }
             };
         } catch (error) {
-            console.error('Pull failed:', error);
             this.updateStatus(SyncStatus.ERROR);
             return {
                 success: false,
@@ -270,6 +246,7 @@ export class SyncEngine implements ISyncEngine {
             };
         }
     }
+
 
 
     async query<T extends { id: string }>(
@@ -286,17 +263,6 @@ export class SyncEngine implements ISyncEngine {
         }
     }
 
-
-    private groupByStore(items: SyncViewItem[]): Map<string, SyncViewItem[]> {
-        const groups = new Map<string, SyncViewItem[]>();
-        for (const item of items) {
-            if (!groups.has(item.store)) {
-                groups.set(item.store, []);
-            }
-            groups.get(item.store)!.push(item);
-        }
-        return groups;
-    }
 
 
     // 自动同步控制

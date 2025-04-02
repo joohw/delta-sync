@@ -16,7 +16,6 @@ export class MemoryAdapter implements DatabaseAdapter {
   constructor() {
     this.stores = new Map();
     this.fileStore = new Map();
-    this.stores.set('__delta_attachments__', new Map());
   }
 
   async isAvailable(): Promise<boolean> {
@@ -30,16 +29,13 @@ export class MemoryAdapter implements DatabaseAdapter {
   ): Promise<{ items: T[]; hasMore: boolean }> {
     const store = this.getStore(storeName);
     let items = Array.from(store.values()) as T[];
-
     // 按创建时间排序
     items.sort((a: any, b: any) =>
       (b.createdAt || 0) - (a.createdAt || 0)
     );
-
     // 分页处理
     const pageLimit = Math.min(limit || 100, this.MAX_STORE_SIZE);
     const pageItems = items.slice(offset, offset + pageLimit);
-
     return {
       items: pageItems,
       hasMore: offset + pageLimit < items.length

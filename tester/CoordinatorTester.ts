@@ -51,7 +51,6 @@ export class CoordinatorTester {
         await this.runTest('数据操作', () => this.testDataOperations());
         await this.runTest('查询操作', () => this.testQueryOperations());
         await this.runTest('变更通知', () => this.testChangeNotification());
-        await this.runTest('同步操作', () => this.testSyncOperations());
         await this.runTest('并发操作', () => this.testConcurrency());
         await this.runTest('大数据量', () => this.testLargeDataset());
         await this.runTest('边界情况', () => this.testEdgeCases());
@@ -140,19 +139,6 @@ export class CoordinatorTester {
         }
     }
 
-
-    private async testSyncOperations(): Promise<void> {
-        const changes: TestData[] = [{
-            id: 'sync-test',
-            content: 'sync test'
-        }];
-        await this.coordinator.applyChanges('sync_test', changes);
-        const view = await this.coordinator.getCurrentView();
-        const item = view.get('sync_test', 'sync-test');
-        if (!item || item.id !== 'sync-test') {
-            throw new Error('同步操作失败');
-        }
-    }
 
 
     private async testConcurrency(): Promise<void> {

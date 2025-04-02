@@ -3,6 +3,7 @@
 export type SyncOperationType = 'put' | 'delete';
 
 
+
 export interface SyncQueryOptions {
     since?: number;      // 查询某个version之后的数据
     limit?: number;      // 限制返回数量
@@ -74,10 +75,24 @@ export interface SyncViewItem {
 }
 
 
+
+export interface DataChange<T = any> {
+    id: string;
+    data?: T;
+    version: number;
+}
+
+
+export interface DataChangeSet {
+    delete: Map<string, DataChange[]>; // store -> changes
+    put: Map<string, DataChange[]>;    // store -> changes
+}
+
+
+
 export class SyncView {
-    static readonly ATTACHMENT_STORE = '__delta_attachments__';
     private items: Map<string, SyncViewItem>;
-    private storeIndex: Map<string, Set<string>>; // store -> itemIds 的索引
+    private storeIndex: Map<string, Set<string>>;
     constructor() {
         this.items = new Map();
         this.storeIndex = new Map();
@@ -113,10 +128,11 @@ export class SyncView {
     }
     // 获取所有 store 的名称
     getStores(): string[] {
-        return Array.from(this.storeIndex.keys()).filter(
-            store => store !== SyncView.ATTACHMENT_STORE
-        );
+        return Array.from(this.storeIndex.keys())
     }
+
+
+
     // 比较两个视图的差异
     static diffViews(local: SyncView, remote: SyncView): {
         toDownload: SyncViewItem[];
@@ -124,29 +140,40 @@ export class SyncView {
     } {
         const toDownload: SyncViewItem[] = [];
         const toUpload: SyncViewItem[] = [];
-        // 检查所有本地记录
-        for (const [key, localItem] of local.items) {
-            const remoteItem = remote.items.get(key);
-            if (!remoteItem) {
-                // 远端没有，需要上传
-                toUpload.push(localItem);
-            } else if (localItem.version > remoteItem.version) {
-                // 本地版本更新，需要上传
-                toUpload.push(localItem);
-            } else if (localItem.version < remoteItem.version) {
-                // 远端版本更新，需要下载
-                toDownload.push(remoteItem);
+        const localKeys = new Set(local.items.keys());
+        const remoteKeys = new Set(remote.items.keys());
+        // 仅本地存在的键（需要上传）
+        for (const key of localKeys) {
+            if (!remoteKeys.has(key)) {
+                toUpload.push(local.items.get(key)!);
             }
         }
-        // 检查远端独有的记录
-        for (const [key, remoteItem] of remote.items) {
-            if (!local.items.has(key)) {
-                // 本地没有，需要下载
-                toDownload.push(remoteItem);
+        // 仅远程存在的键（需要下载）
+        for (const key of remoteKeys) {
+            if (!localKeys.has(key)) {
+                toDownload.push(remote.items.get(key)!);
+            }
+        }
+        // 共同存在的键（需要比对版本）
+        for (const key of localKeys) {
+            if (remoteKeys.has(key)) {
+                const localItem = local.items.get(key)!;
+                const remoteItem = remote.items.get(key)!;
+                if (localItem.version > remoteItem.version) {
+                    toUpload.push(localItem);
+                } else if (localItem.version < remoteItem.version) {
+                    toDownload.push(remoteItem);
+                }
             }
         }
         return { toDownload, toUpload };
     }
+
+
+
+
+
+
     // 生成复合键
     private getKey(store: string, id: string): string {
         return `${store}:${id}`;
@@ -222,23 +249,21 @@ export interface ICoordinator {
     getCurrentView(): Promise<SyncView>;
     // 批量数据操作
     readBulk<T extends { id: string }>(
-        storeName: string, 
+        storeName: string,
         ids: string[]
     ): Promise<T[]>;
     putBulk<T extends { id: string }>(
-        storeName: string, 
-        items: T[], 
+        storeName: string,
+        items: T[],
         silent?: boolean
     ): Promise<T[]>;
     deleteBulk(
-        storeName: string, 
+        storeName: string,
         ids: string[]
     ): Promise<void>;
     onDataChanged(callback: () => void): void;
-    applyChanges<T extends { id: string }>(
-        storeName: string,
-        changes: T[]
-    ): Promise<void>;
+    extractChanges(items: SyncViewItem[]): Promise<DataChangeSet>;
+    applyChanges(changeSet: DataChangeSet): Promise<void>;
 }
 
 
