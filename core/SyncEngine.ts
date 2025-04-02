@@ -8,7 +8,9 @@ import {
     SyncView,
     SyncStatus,
     Attachment,
-    FileItem
+    FileItem,
+    SyncResult,
+    SyncOperationType
 } from './types';
 import { LocalCoordinator } from './LocalCoordinator'
 import { CloudCoordinator } from './CloudCoordinator'
@@ -17,10 +19,10 @@ export class SyncEngine implements ISyncEngine {
     private localCoordinator: LocalCoordinator;
     private cloudCoordinator?: CloudCoordinator;
     private options: SyncOptions;
-    private autoSyncTimer?: ReturnType<typeof setInterval>;
     private syncStatus: SyncStatus = SyncStatus.IDLE;
     private isInitialized: boolean = false;
-
+    private periodicSyncTimer?: ReturnType<typeof setInterval>; // 自动同步定时器
+    private changeDebounceTimer?: ReturnType<typeof setTimeout>;    // 数据变更防抖定时器
 
     constructor(
         localAdapter: DatabaseAdapter,
@@ -28,7 +30,9 @@ export class SyncEngine implements ISyncEngine {
     ) {
         this.localCoordinator = new LocalCoordinator(localAdapter);
         this.options = this.mergeDefaultOptions(options);
+        this.localCoordinator.onDataChanged(() => this.handleDataChange());
     }
+
 
     private mergeDefaultOptions(options: SyncOptions): SyncOptions {
         return {
@@ -83,15 +87,12 @@ export class SyncEngine implements ISyncEngine {
         await this.ensureInitialized();
         const items = Array.isArray(data) ? data : [data];
         const ids = Array.isArray(id) ? id : id ? [id] : [];
-        // 准备要保存的数据
         const deltaItems = items.map((item, index) => ({
             ...item,
             id: ids[index] || this.generateId(),
             store: storeName
         }));
-        // 保存到本地
         const savedItems = await this.localCoordinator.putBulk(storeName, deltaItems);
-        // 返回原始数据类型，移除内部使用的元数据字段
         return savedItems.map(item => {
             const { store, version, deleted, ...userData } = item;
             return userData as T;
@@ -106,7 +107,6 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
-
     async saveFile(
         fileId: string,
         file: File | Blob | ArrayBuffer,
@@ -116,19 +116,15 @@ export class SyncEngine implements ISyncEngine {
     ): Promise<Attachment> {
         await this.ensureInitialized();
         try {
-            // 验证文件大小
             const fileSize = file instanceof ArrayBuffer ? file.byteLength : file.size;
             if (fileSize > this.options.maxFileSize!) {
                 throw new Error(`File size exceeds limit of ${this.options.maxFileSize} bytes`);
             }
-            // 准备文件项
             const fileItem: FileItem = {
                 fileId,
                 content: file
             };
-            // 上传文件
             const [attachment] = await this.localCoordinator.uploadFiles([fileItem]);
-            // 更新附件信息
             const updatedAttachment: Attachment = {
                 ...attachment,
                 filename,
@@ -160,43 +156,66 @@ export class SyncEngine implements ISyncEngine {
 
 
     // 同步操作方法
-    async sync(): Promise<boolean> {
+    async sync(): Promise<SyncResult> {
         if (this.syncStatus !== SyncStatus.IDLE) {
-            console.warn('Sync already in progress, current status:', this.syncStatus);
-            return false;
+            return {
+                success: false,
+                error: `Sync already in progress, current status: ${SyncStatus[this.syncStatus]}`,
+                stats: { uploaded: 0, downloaded: 0, errors: 1 }
+            };
         }
         if (!this.cloudCoordinator) {
-            console.warn('Cloud adapter not set');
             this.updateStatus(SyncStatus.OFFLINE);
-            return false;
+            return {
+                success: false,
+                error: 'Cloud adapter not set',
+                stats: { uploaded: 0, downloaded: 0, errors: 1 }
+            };
         }
         try {
             // Download phase
             this.updateStatus(SyncStatus.DOWNLOADING);
-            const pullSuccess = await this.pull();
-            if (!pullSuccess) {
-                throw new Error('Pull operation failed');
+            const pullResult = await this.pull();
+            if (!pullResult.success) {
+                throw new Error(pullResult.error || 'Pull operation failed');
             }
             // Upload phase
             this.updateStatus(SyncStatus.UPLOADING);
-            const pushSuccess = await this.push();
-            if (!pushSuccess) {
-                throw new Error('Push operation failed');
+            const pushResult = await this.push();
+            if (!pushResult.success) {
+                throw new Error(pushResult.error || 'Push operation failed');
             }
             this.updateStatus(SyncStatus.IDLE);
-            return true;
+            return {
+                success: true,
+                syncedAt: Date.now(),
+                stats: {
+                    uploaded: pushResult.stats?.uploaded || 0,
+                    downloaded: pullResult.stats?.downloaded || 0,
+                    errors: 0
+                }
+            };
         } catch (error) {
             console.error('Sync failed:', error);
             this.updateStatus(SyncStatus.ERROR);
-            return false;
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : 'Unknown error',
+                stats: { uploaded: 0, downloaded: 0, errors: 1 }
+            };
         }
     }
 
 
-    async push(): Promise<boolean> {
+
+    async push(): Promise<SyncResult> {
         if (!this.cloudCoordinator) {
             this.updateStatus(SyncStatus.OFFLINE);
-            throw new Error('Cloud adapter not set');
+            return {
+                success: false,
+                error: 'Cloud adapter not set',
+                stats: { uploaded: 0, downloaded: 0, errors: 1 }
+            };
         }
         try {
             this.updateStatus(SyncStatus.UPLOADING);
@@ -207,51 +226,68 @@ export class SyncEngine implements ISyncEngine {
             const { toUpload } = SyncView.diffViews(localView, cloudView);
             if (toUpload.length === 0) {
                 this.updateStatus(SyncStatus.IDLE);
-                return true;
+                return {
+                    success: true,
+                    syncedAt: Date.now(),
+                    stats: { uploaded: 0, downloaded: 0, errors: 0 }
+                };
             }
             // Process in batches
             const batches = this.splitIntoBatches(toUpload, this.options.batchSize!);
+            let uploadedCount = 0;
             for (const batch of batches) {
                 // Read complete data
                 const items = await this.localCoordinator.readBulk(
                     batch[0].store,
                     batch.map(item => item.id)
                 );
-                // Upload changes
-                await this.cloudCoordinator.applyChanges(items.map(item => ({
+                // Prepare changes
+                const changes: DataChange[] = items.map(item => ({
                     id: item.id,
                     store: item.store,
                     version: item.version,
-                    operation: item.deleted ? 'delete' : 'put',
+                    operation: item.deleted ? 'delete' as SyncOperationType : 'put' as SyncOperationType,
                     data: item.data
-                })));
+                }));
+                // Upload changes
+                await this.cloudCoordinator.applyChanges(changes);
+                // Report batch progress
+                this.options.onChangePushed?.(changes);
+                uploadedCount += changes.length;
             }
-
-            // Report progress if callback provided
-            this.options.onChangePushed?.(
-                toUpload.map(item => ({
-                    id: item.id,
-                    store: item.store,
-                    version: item.version,
-                    operation: item.deleted ? 'delete' : 'put',
-                    data: null
-                }))
-            );
             this.updateStatus(SyncStatus.IDLE);
-            return true;
+            return {
+                success: true,
+                syncedAt: Date.now(),
+                stats: {
+                    uploaded: uploadedCount,
+                    downloaded: 0,
+                    errors: 0
+                }
+            };
         } catch (error) {
             console.error('Push failed:', error);
             this.updateStatus(SyncStatus.ERROR);
-            return false;
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : 'Push failed',
+                stats: { uploaded: 0, downloaded: 0, errors: 1 }
+            };
         }
     }
 
 
 
-    async pull(): Promise<boolean> {
+
+
+    async pull(): Promise<SyncResult> {
         if (!this.cloudCoordinator) {
             this.updateStatus(SyncStatus.OFFLINE);
-            throw new Error('Cloud adapter not set');
+            return {
+                success: false,
+                error: 'Cloud adapter not set',
+                stats: { uploaded: 0, downloaded: 0, errors: 1 }
+            };
         }
         try {
             this.updateStatus(SyncStatus.DOWNLOADING);
@@ -262,58 +298,101 @@ export class SyncEngine implements ISyncEngine {
             const { toDownload } = SyncView.diffViews(localView, cloudView);
             if (toDownload.length === 0) {
                 this.updateStatus(SyncStatus.IDLE);
-                return true;
+                return {
+                    success: true,
+                    syncedAt: Date.now(),
+                    stats: { uploaded: 0, downloaded: 0, errors: 0 }
+                };
             }
             // Download and process in batches
             const batches = this.splitIntoBatches(toDownload, this.options.batchSize!);
-            const downloadedChanges: DataChange[] = [];
+            let downloadedCount = 0;
             for (const batch of batches) {
                 // Read from cloud
                 const items = await this.cloudCoordinator.readBulk(
                     batch[0].store,
                     batch.map(item => item.id)
                 );
-                // Save to local
-                for (const item of items) {
-                    await this.localCoordinator.putBulk(item.store, [item]);
-                    downloadedChanges.push({
-                        id: item.id,
-                        store: item.store,
-                        version: item.version,
-                        operation: item.deleted ? 'delete' : 'put',
-                        data: item.data
-                    });
-                }
+                const batchChanges: DataChange[] = items.map(item => ({
+                    id: item.id,
+                    store: item.store,
+                    version: item.version,
+                    operation: item.deleted ? 'delete' as SyncOperationType : 'put' as SyncOperationType,
+                    data: item.data
+                }));
+                // Report batch progress
+                this.options.onChangePulled?.(batchChanges);
+                downloadedCount += batchChanges.length;
             }
-            // Report progress if callback provided
-            this.options.onChangePulled?.(downloadedChanges);
             this.updateStatus(SyncStatus.IDLE);
-            return true;
+            return {
+                success: true,
+                syncedAt: Date.now(),
+                stats: {
+                    uploaded: 0,
+                    downloaded: downloadedCount,
+                    errors: 0
+                }
+            };
         } catch (error) {
             console.error('Pull failed:', error);
             this.updateStatus(SyncStatus.ERROR);
-            return false;
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : 'Pull failed',
+                stats: { uploaded: 0, downloaded: 0, errors: 1 }
+            };
         }
     }
+
 
 
     // 自动同步控制
     enableAutoSync(interval?: number): void {
-        if (this.autoSyncTimer) {
-            clearInterval(this.autoSyncTimer);
+        if (this.periodicSyncTimer) {
+            clearInterval(this.periodicSyncTimer);
         }
-        const syncInterval = interval || this.options.autoSync?.interval || 5000;
-        this.autoSyncTimer = setInterval(async () => {
-            await this.sync();
-        }, syncInterval);
+        this.options.autoSync = {
+            ...this.options.autoSync,
+            enabled: true,
+            interval: interval || this.options.autoSync?.interval || 5000
+        };
+        this.periodicSyncTimer = setInterval(() => {
+            this.sync();
+        }, this.options.autoSync.interval);
     }
 
+
+    // 禁用自动同步
     disableAutoSync(): void {
-        if (this.autoSyncTimer) {
-            clearInterval(this.autoSyncTimer);
-            this.autoSyncTimer = undefined;
+        if (this.periodicSyncTimer) {
+            clearInterval(this.periodicSyncTimer);
+            this.periodicSyncTimer = undefined;
         }
+        if (this.changeDebounceTimer) {
+            clearTimeout(this.changeDebounceTimer);
+            this.changeDebounceTimer = undefined;
+        }
+        this.options.autoSync = {
+            ...this.options.autoSync,
+            enabled: false
+        };
     }
+
+    // 数据变更时触发定期的变更任务
+    private handleDataChange(): void {
+        if (!this.options.autoSync?.enabled) return;
+        if (this.changeDebounceTimer) {
+            clearTimeout(this.changeDebounceTimer);
+        }
+        this.changeDebounceTimer = setTimeout(async () => {
+            const result = await this.sync();
+            if (!result.success) {
+                console.error('Auto sync failed:', result.error);
+            }
+        }, 10000);
+    }
+
 
     // 配置更新
     updateSyncOptions(options: Partial<SyncOptions>): void {
@@ -321,7 +400,6 @@ export class SyncEngine implements ISyncEngine {
             ...this.options,
             ...options
         });
-        // 如果更新了自动同步设置，重新配置自动同步
         if (options.autoSync) {
             if (options.autoSync.enabled) {
                 this.enableAutoSync(options.autoSync.interval);
@@ -336,6 +414,7 @@ export class SyncEngine implements ISyncEngine {
         return this.localCoordinator;
     }
 
+    // 获取本地数据库适配器
     async getlocalAdapter(): Promise<DatabaseAdapter> {
         return await this.localCoordinator.getAdapter();
     }
@@ -344,8 +423,12 @@ export class SyncEngine implements ISyncEngine {
     dispose(): void {
         this.disableAutoSync();
         this.syncStatus = SyncStatus.OFFLINE;
+        this.localCoordinator.onDataChanged(() => { });
+        this.disconnectCloud();
+        this.isInitialized = false;
     }
 
+    // 断开连接
     disconnectCloud(): void {
         this.cloudCoordinator = undefined;
     }
@@ -362,9 +445,11 @@ export class SyncEngine implements ISyncEngine {
         }
     }
 
+
     private generateId(): string {
         return `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     }
+
 
     private splitIntoBatches<T>(items: T[], batchSize: number): T[][] {
         const batches: T[][] = [];
@@ -374,4 +459,5 @@ export class SyncEngine implements ISyncEngine {
         return batches;
     }
 
+    
 }

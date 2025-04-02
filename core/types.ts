@@ -232,6 +232,7 @@ export interface ILocalCoordinator {
     getCurrentView(): Promise<SyncView>;
     readBulk<T>(storeName: string, ids: string[]): Promise<T[]>;
     putBulk<T>(storeName: string, items: T[]): Promise<T[]>;
+    onDataChanged(callback: () => void): void; // 改为注册回调函数
     deleteBulk(storeName: string, ids: string[]): Promise<void>;
     downloadFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>>;
     uploadFiles(files: FileItem[]): Promise<Attachment[]>;
@@ -263,24 +264,11 @@ export interface SyncResult {
     success: boolean;
     error?: string;
     syncedAt?: number;
-    changes?: DataChange[]; // 同步的变更
     stats?: {
         uploaded: number;
         downloaded: number;
         errors: number;
     };
-}
-
-
-export interface SyncManager {
-    pushChanges(
-        onProgress?: (progress: SyncProgress) => void,
-        onStatusUpdate?: (status: SyncStatus) => void,
-    ): Promise<SyncResult>;
-    pullChanges(
-        onProgress?: (progress: SyncProgress) => void,
-        onStatusUpdate?: (status: SyncStatus) => void,
-    ): Promise<SyncResult>;
 }
 
 
@@ -307,9 +295,9 @@ export interface SyncOptions {
     onChangePushed?: (changes: DataChange[]) => void;
     maxRetries?: number;    // 最大重试次数
     timeout?: number;       // 超时时间(毫秒)
-    maxFileSize?: number;   // 最大支持的文件大小(字节)
     batchSize?: number;     // 同步批次的数量
     payloadSize?: number;   // 传输的对象最大大小(字节)
+    maxFileSize?: number;   // 最大支持的文件大小(字节)
     fileChunkSize?: number; // 文件分块存储的单块大小(字节)
 }
 
@@ -337,10 +325,9 @@ export interface ISyncEngine {
         mimeType: string,
         metadata?: Record<string, any>): Promise<Attachment>;
     delete(storeName: string, ids: string | string[]): Promise<void>;
-    sync(): Promise<boolean>;
-    push(): Promise<boolean>;
-    pull(): Promise<boolean>;
-    // 获取底层实例
+    sync(): Promise<SyncResult>;
+    push(): Promise<SyncResult>;
+    pull(): Promise<SyncResult>;
     getlocalCoordinator(): Promise<ILocalCoordinator>;
     getlocalAdapter(): Promise<DatabaseAdapter>;
     // 清理和断开连接

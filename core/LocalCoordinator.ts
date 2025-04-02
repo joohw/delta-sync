@@ -7,7 +7,7 @@ import {
   SyncView,
   FileItem,
   Attachment,
-  DataItem
+  DataItem,
 } from './types';
 
 
@@ -17,7 +17,7 @@ export class LocalCoordinator implements ILocalCoordinator {
   private readonly SYNC_VIEW_STORE = 'local_sync_view';
   private readonly SYNC_VIEW_KEY = 'current_view';
   private initialized: boolean = false;
-
+  private dataChangeCallback?: () => void;
 
   constructor(adapter: DatabaseAdapter) {
     this.adapter = adapter;
@@ -45,6 +45,13 @@ export class LocalCoordinator implements ILocalCoordinator {
   }
 
 
+  onDataChanged(callback: () => void): void {
+    this.dataChangeCallback = callback;
+  }
+
+  private notifyDataChanged(): void {
+    this.dataChangeCallback?.();
+  }
 
   async disposeSync(): Promise<void> {
     try {
@@ -81,6 +88,10 @@ export class LocalCoordinator implements ILocalCoordinator {
     }
   }
 
+  async downloadFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>> {
+    await this.ensureInitialized();
+    return this.adapter.readFiles(fileIds);
+  }
 
 
   async putBulk<T>(storeName: string, items: T[]): Promise<T[]> {
@@ -90,9 +101,7 @@ export class LocalCoordinator implements ILocalCoordinator {
         id: (item as any).id,
         data: item
       }));
-      // 保存数据
       const results = await this.adapter.putBulk(storeName, dataItems);
-      // 更新同步视图
       for (const item of results) {
         if ('id' in item && 'version' in item) {
           this.syncView.upsert({
@@ -103,13 +112,14 @@ export class LocalCoordinator implements ILocalCoordinator {
           });
         }
       }
+      this.notifyDataChanged();
+      await this.persistView();
       return results;
     } catch (error) {
       console.error(`Failed to put bulk data to store ${storeName}:`, error);
       throw error;
     }
   }
-
 
 
   async deleteBulk(storeName: string, ids: string[]): Promise<void> {
@@ -125,17 +135,12 @@ export class LocalCoordinator implements ILocalCoordinator {
           deleted: true
         });
       }
+      this.notifyDataChanged();
       await this.persistView();
     } catch (error) {
       console.error('删除数据失败:', error);
       throw error;
     }
-  }
-
-
-  async downloadFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>> {
-    await this.ensureInitialized();
-    return this.adapter.readFiles(fileIds);
   }
 
 
@@ -146,6 +151,7 @@ export class LocalCoordinator implements ILocalCoordinator {
       this.syncView.upsertAttachment(attachment);
     }
     await this.persistView();
+    this.notifyDataChanged();
     return attachments;
   }
 
@@ -156,6 +162,7 @@ export class LocalCoordinator implements ILocalCoordinator {
     for (const deletedId of result.deleted) {
       this.syncView.delete(SyncView['ATTACHMENT_STORE'], deletedId);
     }
+    this.notifyDataChanged();
     await this.persistView();
   }
 
