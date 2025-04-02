@@ -4,9 +4,6 @@ import {
   ICoordinator,
   DatabaseAdapter,
   SyncView,
-  FileItem,
-  Attachment,
-  DataChange,
   SyncViewItem,
   SyncQueryOptions,
   SyncQueryResult,
@@ -16,7 +13,6 @@ interface SerializedSyncView {
   id: string;  // 添加必需的 id 字段
   items: Array<SyncViewItem>;
 }
-
 
 export class Coordinator implements ICoordinator {
   private syncView: SyncView;
@@ -31,7 +27,6 @@ export class Coordinator implements ICoordinator {
     this.syncView = new SyncView();
   }
 
-
   async initSync(): Promise<void> {
     if (this.initialized) return;
     try {
@@ -39,7 +34,7 @@ export class Coordinator implements ICoordinator {
         this.SYNC_VIEW_STORE,
         [this.SYNC_VIEW_KEY]
       );
-      if (result.length > 0 && result[0]?.items) {  // 检查 items 是否存在
+      if (result.length > 0 && result[0]?.items) {
         this.syncView = SyncView.deserialize(JSON.stringify(result[0].items));
       } else {
         await this.rebuildSyncView();
@@ -51,13 +46,18 @@ export class Coordinator implements ICoordinator {
     }
   }
 
-
   onDataChanged(callback: () => void): void {
     this.dataChangeCallback = callback;
   }
 
   private notifyDataChanged(): void {
     this.dataChangeCallback?.();
+  }
+
+  private async ensureInitialized(): Promise<void> {
+    if (!this.initialized) {
+      await this.initSync();
+    }
   }
 
   async disposeSync(): Promise<void> {
@@ -71,36 +71,22 @@ export class Coordinator implements ICoordinator {
     }
   }
 
-
-
-  private async ensureInitialized(): Promise<void> {
-    if (!this.initialized) {
-      await this.initSync();
-    }
-  }
-
-
   async getCurrentView(): Promise<SyncView> {
     await this.ensureInitialized();
     return this.syncView;
   }
 
-
-  async readBulk(storeName: string, ids: string[]): Promise<any[]> {
+  async readBulk<T extends { id: string }>(
+    storeName: string,
+    ids: string[]
+  ): Promise<T[]> {
     try {
-      return await this.adapter.readBulk(storeName, ids);
+      return await this.adapter.readBulk<T>(storeName, ids);
     } catch (error) {
       console.error(`Failed to read bulk data from store ${storeName}:`, error);
       throw error;
     }
   }
-
-  async downloadFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>> {
-    await this.ensureInitialized();
-    return this.adapter.readFiles(fileIds);
-  }
-
-
 
   async putBulk<T extends { id: string }>(
     storeName: string,
@@ -110,11 +96,12 @@ export class Coordinator implements ICoordinator {
     await this.ensureInitialized();
     try {
       const results = await this.adapter.putBulk(storeName, items);
+      // 更新同步视图
       for (const item of results) {
         this.syncView.upsert({
           id: item.id,
           store: storeName,
-          version: Date.now(), // 或者使用 item.updatedAt 如果存在的话
+          version: Date.now(),
         });
       }
       if (!silent) {
@@ -128,13 +115,12 @@ export class Coordinator implements ICoordinator {
     }
   }
 
-
-
   async deleteBulk(storeName: string, ids: string[]): Promise<void> {
     await this.ensureInitialized();
     try {
       await this.adapter.deleteBulk(storeName, ids);
       const version = Date.now();
+      // 更新同步视图，标记删除
       for (const id of ids) {
         this.syncView.upsert({
           id,
@@ -151,37 +137,11 @@ export class Coordinator implements ICoordinator {
     }
   }
 
-
-  async uploadFiles(files: FileItem[]): Promise<Attachment[]> {
-    await this.ensureInitialized();
-    const attachments = await this.adapter.saveFiles(files);
-    for (const attachment of attachments) {
-      this.syncView.upsertAttachment(attachment);
-    }
-    await this.persistView();
-    this.notifyDataChanged();
-    return attachments;
-  }
-
-
-  async deleteFiles(fileIds: string[]): Promise<void> {
-    await this.ensureInitialized();
-    const result = await this.adapter.deleteFiles(fileIds);
-    for (const deletedId of result.deleted) {
-      this.syncView.delete(SyncView['ATTACHMENT_STORE'], deletedId);
-    }
-    this.notifyDataChanged();
-    await this.persistView();
-  }
-
-
   async getAdapter(): Promise<DatabaseAdapter> {
     await this.ensureInitialized();
     return this.adapter;
   }
 
-
-  // 重建同步视图
   private async rebuildSyncView(): Promise<void> {
     try {
       this.syncView.clear();
@@ -191,22 +151,22 @@ export class Coordinator implements ICoordinator {
         this.SYNC_VIEW_STORE,
         SyncView.ATTACHMENT_STORE
       ];
+
       for (const store of allStores) {
         let offset = 0;
         const limit = 100;
         while (true) {
-          const { items, hasMore } = await this.adapter.readStore<DataChange>(
+          const { items, hasMore } = await this.adapter.readStore(
             store,
             limit,
             offset
           );
           for (const item of items) {
-            if (item?.id && item?.version) {
+            if (item?.id) {
               this.syncView.upsert({
                 id: item.id,
                 store: store,
-                version: item.version,
-                deleted: item.operation === 'delete',
+                version: Date.now(), // 使用当前时间作为版本号
                 isAttachment: store === SyncView.ATTACHMENT_STORE
               });
             }
@@ -222,58 +182,52 @@ export class Coordinator implements ICoordinator {
     }
   }
 
-
-
-  // 应用数据变更同时不触发回调
-  async applyChanges(changes: DataChange[]): Promise<void> {
-    await this.putBulk(changes[0].store, changes, true);
+  async applyChanges<T extends { id: string }>(
+    storeName: string,
+    changes: T[]
+  ): Promise<void> {
+    if (changes.length === 0) return;
+    await this.putBulk(storeName, changes, true);
   }
 
 
-
-  async querySync(
+  async query<T extends { id: string }>(
     storeName: string,
     options: SyncQueryOptions = {}
-  ): Promise<SyncQueryResult<DataChange>> {
+  ): Promise<SyncQueryResult<T>> {
     await this.ensureInitialized();
-    const {
-      since = 0,
-      offset = 0,
-      limit = 100,
-    } = options;
+    const { since = 0, offset = 0, limit = 100 } = options;
+
     try {
+      // 1. 获取同步视图中的项目
       let items = this.syncView.getByStore(storeName);
+
       // 2. 根据since筛选
       if (since > 0) {
         items = items.filter(item => item.version > since);
       }
+
       // 3. 应用分页
       const paginatedItems = items.slice(offset, offset + limit);
+
       // 4. 读取完整数据
-      const deltaModels = await this.readBulk(
+      const results = await this.readBulk<T>(
         storeName,
         paginatedItems.map(item => item.id)
       );
-      // 5. 映射结果，保持与分页项的顺序一致
-      const resultModels = paginatedItems
-        .map(item => deltaModels.find(model => model.id === item.id))
-        .filter((model): model is DataChange => model !== undefined);
+
       return {
-        items: resultModels,
+        items: results,
         hasMore: items.length > offset + limit
       };
     } catch (error) {
-      console.error(`查询同步数据失败 ${storeName}:`, error);
+      console.error(`查询数据失败 ${storeName}:`, error);
       throw error;
     }
   }
 
-
-
-  // 持久化视图
   private async persistView(): Promise<void> {
     try {
-      // 创建符合类型约束的对象
       const serializedView: SerializedSyncView = {
         id: this.SYNC_VIEW_KEY,
         items: JSON.parse(this.syncView.serialize())
@@ -287,7 +241,4 @@ export class Coordinator implements ICoordinator {
       throw error;
     }
   }
-
-
-
 }

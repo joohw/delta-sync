@@ -1,9 +1,6 @@
 // tester/AdapterTester.ts
 
-import {
-  DatabaseAdapter,
-  FileItem
-} from '../core/types';
+import {DatabaseAdapter} from '../core/types';
 
 
 export class AdapterTester {
@@ -43,7 +40,6 @@ export class AdapterTester {
     await this.runTest('readBulk', () => this.testReadBulk());
     await this.runTest('putBulk', () => this.testPutBulk());
     await this.runTest('deleteBulk', () => this.testDeleteBulk());
-    await this.runTest('fileOperations', () => this.testFileOperations());
     await this.runTest('clearStore', () => this.testClearStore());
     await this.runTest('getStores', () => this.testGetStores());
     // 计算整体测试结果
@@ -99,32 +95,6 @@ export class AdapterTester {
     }
   }
 
-  private async testFileOperations(): Promise<void> {
-    // 测试文件保存
-    const testFile = new Blob(['test content'], { type: 'text/plain' });
-    const fileItem: FileItem = {
-      fileId: 'test-file',
-      content: testFile
-    };
-
-    // 测试保存文件
-    const savedFiles = await this.adapter.saveFiles([fileItem]);
-    if (!Array.isArray(savedFiles) || savedFiles.length === 0) {
-      throw new Error('saveFiles should return an array of Attachments');
-    }
-
-    // 测试读取文件
-    const fileMap = await this.adapter.readFiles([fileItem.fileId]);
-    if (!(fileMap instanceof Map)) {
-      throw new Error('readFiles should return a Map');
-    }
-
-    // 测试删除文件
-    const deleteResult = await this.adapter.deleteFiles([fileItem.fileId]);
-    if (!deleteResult || !Array.isArray(deleteResult.deleted)) {
-      throw new Error('deleteFiles should return { deleted: string[], failed: string[] }');
-    }
-  }
 
   private async testClearStore(): Promise<void> {
     const result = await this.adapter.clearStore(this.testStoreName);

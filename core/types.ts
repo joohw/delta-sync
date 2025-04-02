@@ -3,24 +3,6 @@
 export type SyncOperationType = 'put' | 'delete';
 
 
-export interface Attachment {
-    id: string;               // 附件的唯一标识符，指向二进制数据
-    filename: string;         // 文件名
-    mimeType: string;         // MIME类型
-    size: number;             // 文件大小(字节)
-    createdAt: number;        // 创建时间
-    updatedAt: number;        // 更新时间
-    metadata: Record<string, any>;  // 元数据
-    missingAt?: number; // 对应的附件已经被标记为缺失
-}
-
-
-export interface FileItem {
-    fileId: string,  // 文件在存储的唯一键，与Attachment.id对应
-    content: Blob | ArrayBuffer | string,  // 文件的二进制数据
-}
-
-
 export interface SyncQueryOptions {
     since?: number;      // 查询某个version之后的数据
     limit?: number;      // 限制返回数量
@@ -34,14 +16,52 @@ export interface SyncQueryResult<T = any> {
 }
 
 
+export interface SyncProgress {
+    processed: number;
+    total: number;
+}
 
-// 包含完整数据的变更记录
-export interface DataChange<T = any> {
-    id: string;
-    store: string;           // 存储名称
-    version: number;         // 版本号
-    operation: SyncOperationType;  // 操作类型
-    data: T;// 原始数据
+
+// 返回的同步请求模型
+export interface SyncResult {
+    success: boolean;
+    error?: string;
+    syncedAt?: number;
+    stats?: {
+        uploaded: number;
+        downloaded: number;
+        errors: number;
+    };
+}
+
+
+// Synchronization status enumeration
+export enum SyncStatus {
+    ERROR = -2,        // Error status
+    OFFLINE = -1,      // Offline status
+    IDLE = 0,         // Idle status
+    UPLOADING = 1,    // Upload synchronization in progress
+    DOWNLOADING = 2,  // Download synchronization in progress
+    OPERATING = 3,    // Operation in progress (clearing notes and other special operations)
+}
+
+
+export interface SyncOptions<T extends { id: string } = any> {
+    autoSync?: {
+        enabled?: boolean;
+        interval?: number;
+        retryDelay?: number;
+    };
+    onStatusUpdate?: (status: SyncStatus) => void;
+    onVersionUpdate?: (version: number) => void;
+    onChangePushed?: (items: T[]) => void;    // 改为数组形式
+    onChangePulled?: (items: T[]) => void;    // 改为数组形式
+    maxRetries?: number;    // 最大重试次数
+    timeout?: number;       // 超时时间(毫秒)
+    batchSize?: number;     // 同步批次的数量
+    payloadSize?: number;   // 传输的对象最大大小(字节)
+    maxFileSize?: number;   // 最大支持的文件大小(字节)
+    fileChunkSize?: number; // 文件分块存储的单块大小(字节)
 }
 
 
@@ -91,16 +111,12 @@ export class SyncView {
             .map(id => this.items.get(this.getKey(store, id))!)
             .filter(item => item !== undefined);
     }
-
-
     // 获取所有 store 的名称
     getStores(): string[] {
         return Array.from(this.storeIndex.keys()).filter(
             store => store !== SyncView.ATTACHMENT_STORE
         );
     }
-
-
     // 比较两个视图的差异
     static diffViews(local: SyncView, remote: SyncView): {
         toDownload: SyncViewItem[];
@@ -165,69 +181,7 @@ export class SyncView {
         view.upsertBatch(items);
         return view;
     }
-    // 针对附件的特殊处理
-    upsertAttachment(attachment: Attachment): void {
-        this.upsert({
-            id: attachment.id,
-            store: SyncView.ATTACHMENT_STORE,
-            version: attachment.updatedAt,
-            isAttachment: true
-        });
-    }
-    getAttachments(offset: number = 0, limit: number = 100): SyncViewItem[] {
-        return this.getByStore(SyncView.ATTACHMENT_STORE, offset, limit);
-    }
 }
-
-
-export interface SyncProgress {
-    processed: number;
-    total: number;
-}
-
-
-// 返回的同步请求模型
-export interface SyncResult {
-    success: boolean;
-    error?: string;
-    syncedAt?: number;
-    stats?: {
-        uploaded: number;
-        downloaded: number;
-        errors: number;
-    };
-}
-
-
-// Synchronization status enumeration
-export enum SyncStatus {
-    ERROR = -2,        // Error status
-    OFFLINE = -1,      // Offline status
-    IDLE = 0,         // Idle status
-    UPLOADING = 1,    // Upload synchronization in progress
-    DOWNLOADING = 2,  // Download synchronization in progress
-    OPERATING = 3,    // Operation in progress (clearing notes and other special operations)
-}
-
-
-export interface SyncOptions {
-    autoSync?: {
-        enabled?: boolean;
-        interval?: number;
-        retryDelay?: number;
-    };
-    onStatusUpdate?: (status: SyncStatus) => void;
-    onVersionUpdate?: (version: number) => void;
-    onChangePulled?: (changes: DataChange[]) => void;
-    onChangePushed?: (changes: DataChange[]) => void;
-    maxRetries?: number;    // 最大重试次数
-    timeout?: number;       // 超时时间(毫秒)
-    batchSize?: number;     // 同步批次的数量
-    payloadSize?: number;   // 传输的对象最大大小(字节)
-    maxFileSize?: number;   // 最大支持的文件大小(字节)
-    fileChunkSize?: number; // 文件分块存储的单块大小(字节)
-}
-
 
 
 
@@ -247,32 +201,44 @@ export interface DatabaseAdapter {
         items: T[]
     ): Promise<T[]>;
     deleteBulk(storeName: string, ids: string[]): Promise<void>;
-    readFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>>;
-    saveFiles(files: FileItem[]): Promise<Attachment[]>;
-    deleteFiles(fileIds: string[]): Promise<{ deleted: string[], failed: string[] }>;
     clearStore(storeName: string): Promise<boolean>;
     getStores(): Promise<string[]>;
 }
 
 
 
-// 本地协调器,使用协调数据类型，负责管理本地数据和同步
+
+// 本地协调器接口定义
 export interface ICoordinator {
-    initSync?: () => Promise<void>;     // 可选：在manager中初始化会执行的函数
-    disposeSync?: () => Promise<void>;  // 可选：卸载时执行的函数，清理资源
-    getCurrentView(): Promise<SyncView>;
-    readBulk(storeName: string, ids: string[]): Promise<DataChange[]>;
-    putBulk(storeName: string, items: DataChange[], silent?: boolean): Promise<DataChange[]>;
-    uploadFiles(files: FileItem[]): Promise<Attachment[]>;
-    deleteFiles(fileIds: string[]): Promise<void>;
-    onDataChanged(callback: () => void): void; // 改为注册回调函数
-    deleteBulk(storeName: string, ids: string[]): Promise<void>;
-    downloadFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>>;
-    applyChanges(changes: DataChange[]): Promise<void>;
-    querySync(
+    // 生命周期方法
+    initSync?: () => Promise<void>;     // 可选：初始化时执行
+    disposeSync?: () => Promise<void>;  // 可选：卸载时执行
+    // 核心数据操作方法
+    query<T extends { id: string }>(
         storeName: string,
         options?: SyncQueryOptions
-    ): Promise<SyncQueryResult<DataChange>>;
+    ): Promise<SyncQueryResult<T>>;
+    // 同步视图相关
+    getCurrentView(): Promise<SyncView>;
+    // 批量数据操作
+    readBulk<T extends { id: string }>(
+        storeName: string, 
+        ids: string[]
+    ): Promise<T[]>;
+    putBulk<T extends { id: string }>(
+        storeName: string, 
+        items: T[], 
+        silent?: boolean
+    ): Promise<T[]>;
+    deleteBulk(
+        storeName: string, 
+        ids: string[]
+    ): Promise<void>;
+    onDataChanged(callback: () => void): void;
+    applyChanges<T extends { id: string }>(
+        storeName: string,
+        changes: T[]
+    ): Promise<void>;
 }
 
 
@@ -287,22 +253,15 @@ export interface ISyncEngine {
     updateSyncOptions(options: Partial<SyncOptions>): void;
     // 云端适配器设置
     setCloudAdapter(cloudAdapter: DatabaseAdapter): Promise<void>;
-    // 数据操作
     save<T extends { id: string }>(
         storeName: string,
         data: T | T[]
     ): Promise<T[]>
-    readFile(fileId: string): Promise<Blob | ArrayBuffer | null>;
-    saveFile(fileId: string,
-        file: File | Blob | ArrayBuffer,
-        filename: string,
-        mimeType: string,
-        metadata?: Record<string, any>): Promise<Attachment>;
     delete(storeName: string, ids: string | string[]): Promise<void>;
     sync(): Promise<SyncResult>;
     push(): Promise<SyncResult>;
     pull(): Promise<SyncResult>;
-    query<T extends Record<string, any>>(
+    query<T extends { id: string }>(
         storeName: string,
         options?: SyncQueryOptions
     ): Promise<SyncQueryResult<T>>;
