@@ -3,7 +3,6 @@
 import {
     ICloudCoordinator,
     DatabaseAdapter,
-    DeltaModel,
     SyncView,
     FileItem,
     Attachment,
