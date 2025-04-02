@@ -37,11 +37,11 @@ export interface SyncQueryResult<T = any> {
 
 // 包含完整数据的变更记录
 export interface DataChange<T = any> {
-    id: string;      // 数据实体本身的唯一标识符,由store+原始数据的id计算
-    store: string;
-    data: T;
-    version: number;
-    operation: SyncOperationType;
+    id: string;
+    store: string;           // 存储名称
+    version: number;         // 版本号
+    operation: SyncOperationType;  // 操作类型
+    data: T;// 原始数据
 }
 
 
