@@ -4,12 +4,6 @@ import { ISyncEngine } from '../core/types';
 import { MemoryAdapter } from '../core/adapters';
 import { SyncEngine } from '../core/SyncEngine';
 
-// 测试用的数据类型
-interface TestData {
-    id: string;
-    name: string;
-    value: number;
-}
 
 export class EngineTester {
     private engine1: ISyncEngine;
