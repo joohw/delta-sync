@@ -10,14 +10,17 @@ import {
     Attachment,
     FileItem,
     SyncResult,
-    SyncOperationType
+    SyncOperationType,
+    SyncQueryOptions,
+    SyncQueryResult,
 } from './types';
-import { LocalCoordinator } from './LocalCoordinator'
-import { CloudCoordinator } from './CloudCoordinator'
+
+import { Coordinator } from './Coordinator'
+
 
 export class SyncEngine implements ISyncEngine {
-    private localCoordinator: LocalCoordinator;
-    private cloudCoordinator?: CloudCoordinator;
+    private localCoordinator: Coordinator;
+    private cloudCoordinator?: Coordinator;
     private options: SyncOptions;
     private syncStatus: SyncStatus = SyncStatus.IDLE;
     private isInitialized: boolean = false;
@@ -28,7 +31,7 @@ export class SyncEngine implements ISyncEngine {
         localAdapter: DatabaseAdapter,
         options: SyncOptions = {}
     ) {
-        this.localCoordinator = new LocalCoordinator(localAdapter);
+        this.localCoordinator = new Coordinator(localAdapter);
         this.options = this.mergeDefaultOptions(options);
         this.localCoordinator.onDataChanged(() => this.handleDataChange());
     }
@@ -74,7 +77,7 @@ export class SyncEngine implements ISyncEngine {
 
 
     async setCloudAdapter(cloudAdapter: DatabaseAdapter): Promise<void> {
-        this.cloudCoordinator = new CloudCoordinator(cloudAdapter);
+        this.cloudCoordinator = new Coordinator(cloudAdapter);
     }
 
 
@@ -346,6 +349,22 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
+    async query<T extends Record<string, any>>(
+        storeName: string,
+        options?: SyncQueryOptions
+    ): Promise<SyncQueryResult<T>> {
+        await this.ensureInitialized();
+        const result = await this.localCoordinator.querySync(storeName, options);
+        const items = result.items.map(delta => {
+            const { store, version, ...userData } = delta.data;
+            return userData as T;
+        });
+        return {
+            items,
+            hasMore: result.hasMore
+        };
+    }
+
 
     // 自动同步控制
     enableAutoSync(interval?: number): void {
@@ -410,7 +429,7 @@ export class SyncEngine implements ISyncEngine {
     }
 
     // 实例获取
-    async getlocalCoordinator(): Promise<LocalCoordinator> {
+    async getlocalCoordinator(): Promise<Coordinator> {
         return this.localCoordinator;
     }
 
@@ -459,5 +478,5 @@ export class SyncEngine implements ISyncEngine {
         return batches;
     }
 
-    
+
 }

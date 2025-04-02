@@ -1,17 +1,20 @@
 // core/LocalCoordinator.ts
 
 import {
-  ILocalCoordinator,
+  ICoordinator,
   DatabaseAdapter,
   DeltaModel,
   SyncView,
   FileItem,
   Attachment,
+  DataChange,
   DataItem,
+  SyncQueryOptions,
+  SyncQueryResult,
 } from './types';
 
 
-export class LocalCoordinator implements ILocalCoordinator {
+export class Coordinator implements ICoordinator {
   private syncView: SyncView;
   private adapter: DatabaseAdapter;
   private readonly SYNC_VIEW_STORE = 'local_sync_view';
@@ -94,14 +97,15 @@ export class LocalCoordinator implements ILocalCoordinator {
   }
 
 
-  async putBulk<T>(storeName: string, items: T[]): Promise<T[]> {
+  async putBulk<T>(storeName: string, items: T[], silent: boolean = false  // 默认会触发通知
+  ): Promise<T[]> {
     try {
-      // 准备数据项
       const dataItems: DataItem[] = items.map(item => ({
         id: (item as any).id,
         data: item
       }));
       const results = await this.adapter.putBulk(storeName, dataItems);
+      // 更新同步视图
       for (const item of results) {
         if ('id' in item && 'version' in item) {
           this.syncView.upsert({
@@ -112,7 +116,7 @@ export class LocalCoordinator implements ILocalCoordinator {
           });
         }
       }
-      this.notifyDataChanged();
+      if (!silent) { this.notifyDataChanged(); }
       await this.persistView();
       return results;
     } catch (error) {
@@ -193,7 +197,6 @@ export class LocalCoordinator implements ILocalCoordinator {
                 id: item.id,
                 store: item.store,
                 version: item.version,
-                deleted: item.deleted
               });
             }
           }
@@ -204,6 +207,62 @@ export class LocalCoordinator implements ILocalCoordinator {
       await this.persistView();
     } catch (error) {
       console.error('重建同步视图失败:', error);
+      throw error;
+    }
+  }
+
+
+  // 应用数据变更同时不触发回调
+  async applyChanges(changes: DataChange[]): Promise<void> {
+    const version = Date.now();
+    const items = changes.map(change => ({
+      id: change.id,
+      store: change.store,
+      data: change.data,
+      version,
+      deleted: change.operation === 'delete'
+    }));
+    // 使用静默模式，不触发变更通知
+    await this.putBulk(changes[0].store, items, true);
+  }
+
+
+
+
+  async querySync(
+    storeName: string,
+    options: SyncQueryOptions = {}
+  ): Promise<SyncQueryResult<DeltaModel>> {
+    await this.ensureInitialized();
+    const {
+      since = 0,
+      offset = 0,
+      limit = 100,
+      order = 'desc'  // 默认降序
+    } = options;
+    try {
+      // 修正过滤逻辑
+      const items = this.syncView.getByStore(storeName)
+        .filter(item =>
+          order === 'desc'
+            ? item.version < since    // 降序：获取更早的
+            : item.version > since    // 升序：获取更新的
+        )
+        .sort((a, b) => {
+          const comparison = a.version - b.version;
+          return order === 'asc' ? comparison : -comparison;
+        })
+        .slice(offset, offset + limit);
+      const deltaModels = await this.readBulk(
+        storeName,
+        items.map(item => item.id)
+      );
+      return {
+        items: deltaModels,
+        hasMore: items.length === limit
+      };
+    } catch (error) {
+      console.error(`Sync query failed for store ${storeName}:`, error);
       throw error;
     }
   }

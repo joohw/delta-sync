@@ -4,9 +4,7 @@
 export * from './core/types';
 
 // Export core components
-export * from './core/SyncManager';
-export * from './core/CloudCoordinator';
-export * from './core/LocalCoordinator';
+export * from './core/Coordinator';
 export * from './core/SyncEngine';
 
 // Export adapters

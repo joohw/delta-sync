@@ -20,12 +20,31 @@ export interface FileItem {
     content: Blob | ArrayBuffer | string,  // 文件的二进制数据
 }
 
+export interface DataItem {
+    id: string;
+    data: any;
+}
 
-export interface DeltaModel {
+
+export interface SyncQueryOptions {
+    since?: number;      // 查询某个version之后的数据
+    limit?: number;      // 限制返回数量
+    offset?: number;     // 起始位置
+    order?: 'asc' | 'desc';  // 排序顺序
+}
+
+
+export interface SyncQueryResult<T = any> {
+    items: T[];
+    hasMore: boolean;
+}
+
+
+// 数据在本地协调层以DeltaModel的形式存储
+export interface DeltaModel<T = any> {
     id: string;  // 用于同步的唯一标识符（主键）
-    data: any  //数据实体的最新的完整数据
     store: string// 所属表名，这个数值不应该被修改
-    deleted?: boolean; // 是否被标记为删除
+    data: T  //数据实体的最新的完整数据
     version: number; // 版本号
 }
 
@@ -33,18 +52,10 @@ export interface DeltaModel {
 // 包含完整数据的变更记录
 export interface DataChange<T = any> {
     id: string;      // 数据实体本身的唯一标识符,由store+原始数据的id计算
-    data: T;
     store: string;
+    data: T;
     version: number;
     operation: SyncOperationType;
-}
-
-
-
-// 元数据
-export interface MetaItem extends Omit<DeltaModel, 'store'> {
-    store?: string;
-    value: any;
 }
 
 
@@ -147,6 +158,7 @@ export class SyncView {
         return `${store}:${id}`;
     }
 
+
     // 删除记录
     delete(store: string, id: string): void {
         const key = this.getKey(store, id);
@@ -154,18 +166,15 @@ export class SyncView {
         this.storeIndex.get(store)?.delete(id);
     }
 
-
     // 获取存储大小
     size(): number {
         return this.items.size;
     }
 
-
     // 获取特定 store 的记录数量
     storeSize(store: string): number {
         return this.storeIndex.get(store)?.size || 0;
     }
-
 
     // 清除所有数据
     clear(): void {
@@ -173,12 +182,10 @@ export class SyncView {
         this.storeIndex.clear();
     }
 
-
     // 序列化视图数据（用于持久化）
     serialize(): string {
         return JSON.stringify(Array.from(this.items.values()));
     }
-
 
     // 从序列化数据恢复（用于持久化）
     static deserialize(data: string): SyncView {
@@ -205,52 +212,7 @@ export class SyncView {
 
 }
 
-export interface DataItem {
-    id: string;
-    data: any;
-}
 
-
-// 数据库适配器,支持任意类型的数据库
-export interface DatabaseAdapter {
-    readStore<T>(storeName: string, limit?: number, offset?: number): Promise<{ items: T[]; hasMore: boolean }>;
-    readBulk<T extends DeltaModel>(storeName: string, ids: string[]): Promise<T[]>;
-    putBulk(storeName: string, items: DataItem[]): Promise<any[]>;
-    deleteBulk(storeName: string, ids: string[]): Promise<void>;
-    readFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>>;
-    saveFiles(files: FileItem[]): Promise<Attachment[]>;
-    deleteFiles(fileIds: string[]): Promise<{ deleted: string[], failed: string[] }>;
-    clearStore(storeName: string): Promise<boolean>;
-}
-
-
-
-// 本地协调器,负责管理本地数据和同步
-export interface ILocalCoordinator {
-    initSync?: () => Promise<void>;     // 可选：在manager中初始化会执行的函数
-    disposeSync?: () => Promise<void>;  // 可选：卸载时执行的函数，清理资源
-    getCurrentView(): Promise<SyncView>;
-    readBulk<T>(storeName: string, ids: string[]): Promise<T[]>;
-    putBulk<T>(storeName: string, items: T[]): Promise<T[]>;
-    onDataChanged(callback: () => void): void; // 改为注册回调函数
-    deleteBulk(storeName: string, ids: string[]): Promise<void>;
-    downloadFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>>;
-    uploadFiles(files: FileItem[]): Promise<Attachment[]>;
-    deleteFiles(fileIds: string[]): Promise<void>;
-}
-
-
-// 云协调器,负责管理云端数据和同步
-export interface ICloudCoordinator {
-    initSync?: () => Promise<void>;     // 可选：在engine中初始化会执行的函数
-    disposeSync?: () => Promise<void>;  // 可选：卸载时执行的函数，清理资源
-    getCurrentView(): Promise<SyncView>;
-    readBulk(storeName: string, ids: string[]): Promise<any[]>;
-    applyChanges(changes: DataChange[]): Promise<void>;
-    downloadFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>>;
-    uploadFiles(files: FileItem[]): Promise<Attachment[]>;
-    deleteFiles(fileIds: string[]): Promise<void>;
-}
 
 
 export interface SyncProgress {
@@ -303,6 +265,43 @@ export interface SyncOptions {
 
 
 
+
+// 数据库适配器,支持任意类型的数据库
+export interface DatabaseAdapter {
+    readStore<T>(storeName: string, limit?: number, offset?: number): Promise<{ items: T[]; hasMore: boolean }>;
+    readBulk<T extends DeltaModel>(storeName: string, ids: string[]): Promise<T[]>;
+    putBulk(storeName: string, items: DataItem[]): Promise<any[]>;
+    deleteBulk(storeName: string, ids: string[]): Promise<void>;
+    readFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>>;
+    saveFiles(files: FileItem[]): Promise<Attachment[]>;
+    deleteFiles(fileIds: string[]): Promise<{ deleted: string[], failed: string[] }>;
+    clearStore(storeName: string): Promise<boolean>;
+}
+
+
+
+// 本地协调器,使用协调数据类型，负责管理本地数据和同步
+export interface ICoordinator {
+    initSync?: () => Promise<void>;     // 可选：在manager中初始化会执行的函数
+    disposeSync?: () => Promise<void>;  // 可选：卸载时执行的函数，清理资源
+    getCurrentView(): Promise<SyncView>;
+    readBulk(storeName: string, ids: string[]): Promise<DeltaModel[]>;
+    putBulk(storeName: string, items: DeltaModel[]): Promise<DeltaModel[]>;
+    uploadFiles(files: FileItem[]): Promise<Attachment[]>;
+    deleteFiles(fileIds: string[]): Promise<void>;
+    onDataChanged(callback: () => void): void; // 改为注册回调函数
+    deleteBulk(storeName: string, ids: string[]): Promise<void>;
+    downloadFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>>;
+    applyChanges(changes: DataChange[]): Promise<void>;
+    querySync(
+        storeName: string,
+        options?: SyncQueryOptions
+    ): Promise<SyncQueryResult<DeltaModel>>;
+}
+
+
+
+
 export interface ISyncEngine {
     // 初始化
     initialize(): Promise<void>;
@@ -328,7 +327,11 @@ export interface ISyncEngine {
     sync(): Promise<SyncResult>;
     push(): Promise<SyncResult>;
     pull(): Promise<SyncResult>;
-    getlocalCoordinator(): Promise<ILocalCoordinator>;
+    query<T extends Record<string, any>>(
+        storeName: string,
+        options?: SyncQueryOptions
+    ): Promise<SyncQueryResult<T>>;
+    getlocalCoordinator(): Promise<ICoordinator>;
     getlocalAdapter(): Promise<DatabaseAdapter>;
     // 清理和断开连接
     dispose(): void;
