@@ -30,7 +30,6 @@ export interface SyncQueryOptions {
     since?: number;      // 查询某个version之后的数据
     limit?: number;      // 限制返回数量
     offset?: number;     // 起始位置
-    order?: 'asc' | 'desc';  // 排序顺序
 }
 
 
@@ -45,6 +44,7 @@ export interface DeltaModel<T = any> {
     id: string;  // 用于同步的唯一标识符（主键）
     store: string// 所属表名，这个数值不应该被修改
     data: T  //数据实体的最新的完整数据
+    deleted?: boolean;  // 是否被删除
     version: number; // 版本号
 }
 
@@ -70,7 +70,7 @@ export interface SyncViewItem {
 
 
 export class SyncView {
-    private static readonly ATTACHMENT_STORE = '__delta_attachments__';
+    static readonly ATTACHMENT_STORE = '__delta_attachments__';
     private items: Map<string, SyncViewItem>;
     private storeIndex: Map<string, Set<string>>; // store -> itemIds 的索引
     constructor() {
@@ -194,8 +194,6 @@ export class SyncView {
         view.upsertBatch(items);
         return view;
     }
-
-
     // 针对附件的特殊处理
     upsertAttachment(attachment: Attachment): void {
         this.upsert({
@@ -205,14 +203,10 @@ export class SyncView {
             isAttachment: true
         });
     }
-
     getAttachments(offset: number = 0, limit: number = 100): SyncViewItem[] {
         return this.getByStore(SyncView.ATTACHMENT_STORE, offset, limit);
     }
-
 }
-
-
 
 
 export interface SyncProgress {
@@ -276,6 +270,7 @@ export interface DatabaseAdapter {
     saveFiles(files: FileItem[]): Promise<Attachment[]>;
     deleteFiles(fileIds: string[]): Promise<{ deleted: string[], failed: string[] }>;
     clearStore(storeName: string): Promise<boolean>;
+    getStores(): Promise<string[]>;
 }
 
 
@@ -286,7 +281,7 @@ export interface ICoordinator {
     disposeSync?: () => Promise<void>;  // 可选：卸载时执行的函数，清理资源
     getCurrentView(): Promise<SyncView>;
     readBulk(storeName: string, ids: string[]): Promise<DeltaModel[]>;
-    putBulk(storeName: string, items: DeltaModel[]): Promise<DeltaModel[]>;
+    putBulk(storeName: string, items: DeltaModel[], silent?: boolean): Promise<DeltaModel[]>;
     uploadFiles(files: FileItem[]): Promise<Attachment[]>;
     deleteFiles(fileIds: string[]): Promise<void>;
     onDataChanged(callback: () => void): void; // 改为注册回调函数
@@ -313,10 +308,9 @@ export interface ISyncEngine {
     setCloudAdapter(cloudAdapter: DatabaseAdapter): Promise<void>;
     // 数据操作
     save<T extends Record<string, any>>(
-        storeName: string,              // 存储名称
-        data: T | T[],                 // 要保存的数据，支持单个对象或数组
-        id?: string | string[]         // 可选的 ID，单个或数组，与 data 对应
-    ): Promise<T[]>;    // 返回添加了 DeltaModel 属性的数据数组
+        storeName: string,                      // 存储名称
+        data: DataItem | DataItem[],           // 单个数据项或数据项数组
+    ): Promise<T[]>;    
     readFile(fileId: string): Promise<Blob | ArrayBuffer | null>;
     saveFile(fileId: string,
         file: File | Blob | ArrayBuffer,

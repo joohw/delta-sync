@@ -6,17 +6,16 @@ import {
     DeltaModel,
     FileItem,
     DataChange,
-    Attachment
 } from '../core/types';
-
 import { MemoryAdapter } from '../core/adapters';
 import { Coordinator } from '../core/Coordinator';
+
+
 
 export class CoordinatorTester {
     private coordinator: ICoordinator;
     private memoryAdapter: MemoryAdapter;
     private testResults: Record<string, { success: boolean; message: string }> = {};
-
     constructor() {
         this.memoryAdapter = new MemoryAdapter();
         this.coordinator = new Coordinator(this.memoryAdapter);
@@ -52,7 +51,6 @@ export class CoordinatorTester {
         await this.runTest('查询操作', () => this.testQueryOperations());
         await this.runTest('变更通知', () => this.testChangeNotification());
         await this.runTest('数据同步', () => this.testSyncOperations());
-
         // 压力测试
         await this.runTest('并发操作', () => this.testConcurrency());
         await this.runTest('大数据量', () => this.testLargeDataset());
@@ -143,25 +141,56 @@ export class CoordinatorTester {
 
     private async testQueryOperations(): Promise<void> {
         const testStore = 'query_test';
-
+    
+        // 清理测试数据
+        await this.coordinator.deleteBulk(testStore,
+            (await this.coordinator.getCurrentView())
+                .getByStore(testStore)
+                .map(item => item.id)
+        );
+    
         // 写入测试数据
-        const testData = Array.from({ length: 10 }, (_, i) => ({
+        const baseVersion = Date.now();
+        const testItems: DeltaModel[] = Array.from({ length: 10 }, (_, i) => ({
             id: `query-test-${i}`,
             store: testStore,
             data: { index: i },
-            version: Date.now() + i
+            version: baseVersion + i,
+            deleted: false
         }));
-
-        await this.coordinator.putBulk(testStore, testData);
-
-        // 测试分页查询
+    
+        // 批量写入数据
+        await this.coordinator.putBulk(testStore, testItems);
+        
+        // 测试基本查询功能
         const result = await this.coordinator.querySync(testStore, {
-            limit: 5,
-            offset: 0
+            limit: 5
         });
-
-        if (!result.items || result.items.length !== 5) {
-            throw new Error('分页查询失败');
+    
+        // 验证返回数量
+        if (result.items.length !== 5) {
+            throw new Error(`查询数量错误: 期望5条，实际${result.items.length}条`);
+        }
+    
+        // 测试分页
+        const pageResult = await this.coordinator.querySync(testStore, {
+            offset: 3,
+            limit: 3
+        });
+    
+        if (pageResult.items.length !== 3) {
+            throw new Error(`分页查询数量错误: 期望3条，实际${pageResult.items.length}条`);
+        }
+    
+        // 测试 since 查询
+        const midVersion = baseVersion + 5;
+        const sinceResult = await this.coordinator.querySync(testStore, {
+            since: midVersion
+        });
+    
+        // 验证版本号筛选
+        if (!sinceResult.items.every(item => item.version >= midVersion)) {
+            throw new Error('version 筛选错误: 包含了不符合条件的数据');
         }
     }
 

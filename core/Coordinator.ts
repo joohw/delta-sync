@@ -97,33 +97,64 @@ export class Coordinator implements ICoordinator {
   }
 
 
-  async putBulk<T>(storeName: string, items: T[], silent: boolean = false  // 默认会触发通知
-  ): Promise<T[]> {
+  async putBulk(
+    storeName: string,
+    items: DeltaModel[],
+    silent: boolean = false
+  ): Promise<DeltaModel[]> {
+    await this.ensureInitialized();
     try {
-      const dataItems: DataItem[] = items.map(item => ({
-        id: (item as any).id,
-        data: item
+      // 确保所有项都有正确的store和version
+      const normalizedItems = items.map(item => ({
+        ...item,
+        store: storeName,  // 确保store正确
+        version: item.version || Date.now(),  // 如果没有version则使用当前时间戳
+        deleted: item.deleted || false  // 确保deleted字段存在
       }));
+
+      // 转换为DataItem格式供适配器使用
+      const dataItems: DataItem[] = normalizedItems.map(item => ({
+        id: item.id,
+        data: item  // 存储完整的DeltaModel
+      }));
+
+      // 写入数据
       const results = await this.adapter.putBulk(storeName, dataItems);
+      // 将结果转换回DeltaModel格式
+      const deltaResults = results.map(result => {
+        // 确保返回的数据符合DeltaModel接口
+        const deltaModel: DeltaModel = {
+          id: result.id,
+          store: storeName,
+          data: result.data?.data || result.data,
+          version: result.version || result.data?.version,
+          deleted: result.deleted || false
+        };
+        return deltaModel;
+      });
       // 更新同步视图
-      for (const item of results) {
-        if ('id' in item && 'version' in item) {
-          this.syncView.upsert({
-            id: item.id,
-            store: storeName,
-            version: item.version,
-            deleted: false
-          });
-        }
+      for (const item of deltaResults) {
+        this.syncView.upsert({
+          id: item.id,
+          store: storeName,
+          version: item.version,
+          deleted: item.deleted,
+          revisionCount: (item as any).revisionCount
+        });
       }
-      if (!silent) { this.notifyDataChanged(); }
+      // 如果不是静默操作，触发变更通知
+      if (!silent) {
+        this.notifyDataChanged();
+      }
+      // 持久化同步视图
       await this.persistView();
-      return results;
+      return deltaResults;
     } catch (error) {
       console.error(`Failed to put bulk data to store ${storeName}:`, error);
       throw error;
     }
   }
+
 
 
   async deleteBulk(storeName: string, ids: string[]): Promise<void> {
@@ -181,8 +212,13 @@ export class Coordinator implements ICoordinator {
   private async rebuildSyncView(): Promise<void> {
     try {
       this.syncView.clear();
-      const stores = this.syncView.getStores();
-      for (const store of stores) {
+      const stores = await this.adapter.getStores();
+      const allStores = [
+        ...stores,
+        this.SYNC_VIEW_STORE,
+        SyncView.ATTACHMENT_STORE
+      ];
+      for (const store of allStores) {
         let offset = 0;
         const limit = 100;
         while (true) {
@@ -192,11 +228,13 @@ export class Coordinator implements ICoordinator {
             offset
           );
           for (const item of items) {
-            if (item.version) {
+            if (item?.id && item?.version) {
               this.syncView.upsert({
                 id: item.id,
-                store: item.store,
+                store: store,
                 version: item.version,
+                deleted: item.deleted || false,
+                isAttachment: store === SyncView.ATTACHMENT_STORE
               });
             }
           }
@@ -210,6 +248,7 @@ export class Coordinator implements ICoordinator {
       throw error;
     }
   }
+
 
 
   // 应用数据变更同时不触发回调
@@ -227,7 +266,6 @@ export class Coordinator implements ICoordinator {
 
 
 
-
   async querySync(
     storeName: string,
     options: SyncQueryOptions = {}
@@ -237,34 +275,36 @@ export class Coordinator implements ICoordinator {
       since = 0,
       offset = 0,
       limit = 100,
-      order = 'desc'  // 默认降序
     } = options;
     try {
-      // 修正过滤逻辑
-      const items = this.syncView.getByStore(storeName)
-        .filter(item =>
-          order === 'desc'
-            ? item.version < since    // 降序：获取更早的
-            : item.version > since    // 升序：获取更新的
-        )
-        .sort((a, b) => {
-          const comparison = a.version - b.version;
-          return order === 'asc' ? comparison : -comparison;
-        })
-        .slice(offset, offset + limit);
+      // 1. 获取store的所有items
+      let items = this.syncView.getByStore(storeName);
+      // 2. 根据since筛选
+      if (since > 0) {
+        items = items.filter(item => item.version > since);
+      }
+      // 3. 应用分页
+      const paginatedItems = items.slice(offset, offset + limit);
+      // 4. 读取完整数据
       const deltaModels = await this.readBulk(
         storeName,
-        items.map(item => item.id)
+        paginatedItems.map(item => item.id)
       );
+      // 5. 映射结果，保持与分页项的顺序一致
+      const resultModels = paginatedItems
+        .map(item => deltaModels.find(model => model.id === item.id))
+        .filter((model): model is DeltaModel => model !== undefined);
+      // 6. 返回结果
       return {
-        items: deltaModels,
-        hasMore: items.length === limit
+        items: resultModels,
+        hasMore: items.length > offset + limit
       };
     } catch (error) {
-      console.error(`Sync query failed for store ${storeName}:`, error);
+      console.error(`查询同步数据失败 ${storeName}:`, error);
       throw error;
     }
   }
+
 
 
   // 持久化视图

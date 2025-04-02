@@ -1,11 +1,11 @@
 // tester/AdapterTester.ts
 
-import { 
-  DatabaseAdapter, 
-  DeltaModel, 
+import {
+  DatabaseAdapter,
+  DeltaModel,
   DataItem,
   Attachment,
-  FileItem 
+  FileItem
 } from '../core/types';
 
 export class AdapterTester {
@@ -19,7 +19,7 @@ export class AdapterTester {
   }
 
   private async runTest(
-    testName: string, 
+    testName: string,
     testFn: () => Promise<void>
   ): Promise<void> {
     try {
@@ -47,7 +47,7 @@ export class AdapterTester {
     await this.runTest('deleteBulk', () => this.testDeleteBulk());
     await this.runTest('fileOperations', () => this.testFileOperations());
     await this.runTest('clearStore', () => this.testClearStore());
-
+    await this.runTest('getStores', () => this.testGetStores());
     // 计算整体测试结果
     const success = Object.values(this.testResults)
       .every(result => result.success);
@@ -135,17 +135,14 @@ export class AdapterTester {
     }
   }
 
-  /**
-   * 生成测试数据
-   */
-  private generateTestData(count: number): DeltaModel[] {
-    return Array.from({ length: count }, (_, i) => ({
-      id: `test-${i}`,
-      store: this.testStoreName,
-      data: { content: `Test content ${i}` },
-      version: Date.now() + i
-    }));
+  private async testGetStores(): Promise<void> {
+    const stores = await this.adapter.getStores();
+    if (!Array.isArray(stores)) {
+      throw new Error('getStores should return an array of strings');
+    }
   }
+
+
 }
 
 export async function testAdapterFunctionality(

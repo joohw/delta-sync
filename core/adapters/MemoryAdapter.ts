@@ -24,7 +24,9 @@ export class MemoryAdapter implements DatabaseAdapter {
   constructor() {
     this.stores = new Map();
     this.fileStore = new Map();
+    this.stores.set('__delta_attachments__', new Map());
   }
+
 
   /**
    * 检查存储是否可用
@@ -218,5 +220,11 @@ export class MemoryAdapter implements DatabaseAdapter {
 
   private getContentSize(content: Blob | ArrayBuffer): number {
     return content instanceof Blob ? content.size : content.byteLength;
+  }
+
+  async getStores(): Promise<string[]> {
+    return Array.from(this.stores.keys()).filter(
+      store => !store.startsWith('__')
+    );
   }
 }

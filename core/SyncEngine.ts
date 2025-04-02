@@ -9,6 +9,8 @@ import {
     SyncStatus,
     Attachment,
     FileItem,
+    DataItem,
+    DeltaModel,
     SyncResult,
     SyncOperationType,
     SyncQueryOptions,
@@ -86,23 +88,28 @@ export class SyncEngine implements ISyncEngine {
     // 数据操作方法
     async save<T extends Record<string, any>>(
         storeName: string,
-        data: T | T[],
-        id?: string | string[]
+        data: DataItem | DataItem[]
     ): Promise<T[]> {
         await this.ensureInitialized();
+        // 统一转换为数组
         const items = Array.isArray(data) ? data : [data];
-        const ids = Array.isArray(id) ? id : id ? [id] : [];
-        const deltaItems = items.map((item, index) => ({
-            ...item,
-            id: ids[index] || this.generateId(),
-            store: storeName
-        }));
-        const savedItems = await this.localCoordinator.putBulk(storeName, deltaItems);
-        return savedItems.map(item => {
-            const { store, version, deleted, ...userData } = item;
-            return userData as T;
+        // 构造 DeltaModel 数组
+        const deltaItems = items.map(item => {
+            const deltaModel: DeltaModel<T> = {
+                id: item.id,
+                store: storeName,
+                data: item.data,
+                version: Date.now(), // 使用当前时间戳作为版本号
+                deleted: false
+            };
+            return deltaModel;
         });
+        // 调用协调器的 putBulk 方法
+        const savedItems = await this.localCoordinator.putBulk(storeName, deltaItems, false);
+        // 从 DeltaModel 转换回原始数据类型
+        return savedItems.map(item => item.data as T);
     }
+    
 
 
     async delete(storeName: string, ids: string | string[]): Promise<void> {
