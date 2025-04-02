@@ -19,6 +19,7 @@ import { Coordinator } from './Coordinator'
 
 
 export class SyncEngine implements ISyncEngine {
+    
     private localCoordinator: Coordinator;
     private cloudCoordinator?: Coordinator;
     private options: SyncOptions;
@@ -26,6 +27,7 @@ export class SyncEngine implements ISyncEngine {
     private isInitialized: boolean = false;
     private periodicSyncTimer?: ReturnType<typeof setInterval>; // 自动同步定时器
     private changeDebounceTimer?: ReturnType<typeof setTimeout>;    // 数据变更防抖定时器
+
 
     constructor(
         localAdapter: DatabaseAdapter,

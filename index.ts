@@ -8,8 +8,8 @@ export * from './core/Coordinator';
 export * from './core/SyncEngine';
 
 // Export adapters
-export * from './adapters/MemoryAdapter';
+export * from './core/adapters/MemoryAdapter';
 
 // Export testers
-export * from './tester/FunctionTester';
-export * from './tester/PerformanceTester';
+export * from './tester/AdapterTester';
+export * from './tester/CoordinatorTester';

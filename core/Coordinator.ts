@@ -222,7 +222,6 @@ export class Coordinator implements ICoordinator {
       version,
       deleted: change.operation === 'delete'
     }));
-    // 使用静默模式，不触发变更通知
     await this.putBulk(changes[0].store, items, true);
   }
 

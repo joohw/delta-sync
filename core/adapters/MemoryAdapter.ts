@@ -4,7 +4,8 @@ import {
   Attachment,
   FileItem,
   DataItem
-} from '../core/types';
+} from '../types';
+
 
 interface StoredFile {
   id: string;
@@ -14,11 +15,11 @@ interface StoredFile {
   updatedAt: number;
 }
 
+
 export class MemoryAdapter implements DatabaseAdapter {
   private stores: Map<string, Map<string, any>>;
   private fileStore: Map<string, StoredFile>;
   private readonly MAX_STORE_SIZE = 10000; // 每个store的最大记录数
-
 
   constructor() {
     this.stores = new Map();

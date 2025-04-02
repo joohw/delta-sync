@@ -1,11 +1,13 @@
 // /test/index.ts
 
-import { MemoryAdapter } from '../adapters';
+import { MemoryAdapter } from '../core/adapters';
 import { DatabaseAdapter } from '../core/types';
-import { testAdapterFunctionality } from '../tester/FunctionTester';
-import { testAdapterPerformance } from '../tester/PerformanceTester';
+import { testAdapterFunctionality } from '../tester/AdapterTester';
+import { testCoordinatorFunctionality } from '../tester/CoordinatorTester';
 
-
+/**
+ * 测试适配器功能
+ */
 export async function testAdapter(
     adapter: DatabaseAdapter,
     options?: {
@@ -17,50 +19,84 @@ export async function testAdapter(
     return result.success;
 }
 
-
-
-async function runPerformanceTests(adapter: DatabaseAdapter) {
-    console.log('Testing adapter performance...');
-    const results = await testAdapterPerformance(adapter, {
-        itemCount: 50,
-        iterations: 2,
-        fileSize: 1000 * 1024,
-        verbose: true
-    });
-    console.log('\nPerformance Results Summary:');
-    console.log('Operation | Average Time (ms) | Operations/sec');
-    console.log('------------------------------------------------');
-    for (const testName of Object.keys(results)) {
-        const avgTime = results[testName].averageTimeMs.toFixed(2);
-        const opsPerSec = results[testName].operationsPerSecond.toFixed(2);
-        console.log(`${testName} | ${avgTime} | ${opsPerSec}`);
-    }
-    const avgTime = Object.values(results).reduce(
-        (sum, result) => sum + result.averageTimeMs, 0
-    ) / Object.keys(results).length;
-    console.log(`\nOverall average operation time: ${avgTime.toFixed(2)}ms`);
-    return results;
+/**
+ * 测试协调器功能
+ */
+export async function testCoordinator(): Promise<boolean> {
+    const result = await testCoordinatorFunctionality();
+    return result.success;
 }
 
+/**
+ * 打印测试结果
+ */
+function printTestResults(
+    name: string,
+    results: Record<string, { success: boolean; message: string }>
+) {
+    console.log(`\n=== ${name} 测试结果 ===`);
+    
+    const failed = Object.entries(results)
+        .filter(([_, result]) => !result.success);
+    
+    const passed = Object.entries(results)
+        .filter(([_, result]) => result.success);
 
-// 创建内存适配器实例
+    // 打印通过的测试
+    console.log(`\n✅ 通过 (${passed.length})`);
+    passed.forEach(([name]) => {
+        console.log(`  - ${name}`);
+    });
+
+    // 打印失败的测试
+    if (failed.length > 0) {
+        console.log(`\n❌ 失败 (${failed.length})`);
+        failed.forEach(([name, result]) => {
+            console.log(`  - ${name}: ${result.message}`);
+        });
+    }
+}
+
+/**
+ * 主测试函数
+ */
 async function main() {
+    console.log('开始运行测试...\n');
+    
+    // 测试内存适配器
     const memoryAdapter = new MemoryAdapter();
-    console.log('=== Running Functionality Tests on MemoryAdapter ===');
-    const functionalityResult = await testAdapter(memoryAdapter, {
-        storeName: 'memory_test',
-        autoCleanup: true
-    });
-    console.log('Functionality tests result:', functionalityResult ? 'PASSED' : 'FAILED');
-    if (functionalityResult) {
-        console.log('\n=== Running Performance Tests on MemoryAdapter ===');
-        await runPerformanceTests(memoryAdapter);
+    console.log('测试内存适配器...');
+    const adapterResult = await testAdapterFunctionality(memoryAdapter);
+    printTestResults('适配器', adapterResult.results);
+    
+    // 测试协调器
+    console.log('\n测试协调器...');
+    const coordinatorResult = await testCoordinatorFunctionality();
+    printTestResults('协调器', coordinatorResult.results);
+
+    // 输出总体结果
+    console.log('\n=== 测试总结 ===');
+    const allPassed = adapterResult.success && coordinatorResult.success;
+    
+    if (allPassed) {
+        console.log('✅ 所有测试通过！');
+    } else {
+        console.log('❌ 部分测试失败');
+        process.exit(1);
     }
 }
 
+// 仅在直接运行时执行测试
+if (require.main === module) {
+    main().catch(error => {
+        console.error('测试执行失败:', error);
+        process.exit(1);
+    });
+}
 
-
-main().catch(error => {
-    console.error('Test execution failed:', error);
-    process.exit(1);
-});
+// 导出测试功能
+export const testing = {
+    testAdapter,
+    testCoordinator,
+    runAll: main
+};
