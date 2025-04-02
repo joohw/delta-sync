@@ -2,7 +2,6 @@
 
 import {
   DatabaseAdapter,
-  DataItem,
   FileItem
 } from '../core/types';
 
@@ -73,7 +72,7 @@ export class AdapterTester {
   }
 
   private async testPutBulk(): Promise<void> {
-    const testItems: DataItem[] = [
+    const testItems = [
       {
         id: 'test1',
         data: { content: 'test content 1' }

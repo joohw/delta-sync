@@ -7,10 +7,15 @@ import {
   FileItem,
   Attachment,
   DataChange,
-  DataItem,
+  SyncViewItem,
   SyncQueryOptions,
   SyncQueryResult,
 } from './types';
+
+interface SerializedSyncView {
+  id: string;  // 添加必需的 id 字段
+  items: Array<SyncViewItem>;
+}
 
 
 export class Coordinator implements ICoordinator {
@@ -30,12 +35,12 @@ export class Coordinator implements ICoordinator {
   async initSync(): Promise<void> {
     if (this.initialized) return;
     try {
-      const result = await this.adapter.readBulk(
+      const result = await this.adapter.readBulk<SerializedSyncView>(
         this.SYNC_VIEW_STORE,
         [this.SYNC_VIEW_KEY]
       );
-      if (result.length > 0 && result[0].data) {
-        this.syncView = SyncView.deserialize(result[0].data);
+      if (result.length > 0 && result[0]?.items) {  // 检查 items 是否存在
+        this.syncView = SyncView.deserialize(JSON.stringify(result[0].items));
       } else {
         await this.rebuildSyncView();
       }
@@ -96,52 +101,27 @@ export class Coordinator implements ICoordinator {
   }
 
 
-  async putBulk(
+
+  async putBulk<T extends { id: string }>(
     storeName: string,
-    items: DataChange[],
+    items: T[],
     silent: boolean = false
-  ): Promise<DataChange[]> {
+  ): Promise<T[]> {
     await this.ensureInitialized();
     try {
-      // 确保所有项都有正确的store和version
-      const normalizedItems = items.map(item => ({
-        ...item,
-        store: storeName,  // 确保store正确
-        version: item.version || Date.now(),  // 如果没有version则使用当前时间戳
-        operation: 'put'
-      }));
-      // 转换为DataItem格式供适配器使用
-      const dataItems: DataItem[] = normalizedItems.map(item => ({
-        id: item.id,
-        data: item  // 存储完整的DataChange
-      }));
-      // 写入数据
-      const results = await this.adapter.putBulk(storeName, dataItems);
-      const deltaResults = results.map(result => {
-        const deltaModel: DataChange = {
-          id: result.id,
-          store: storeName,
-          data: result.data?.data || result.data,
-          version: result.version || result.data?.version,
-          operation: 'put',
-        };
-        return deltaModel;
-      });
-      // 更新同步视图
-      for (const item of deltaResults) {
+      const results = await this.adapter.putBulk(storeName, items);
+      for (const item of results) {
         this.syncView.upsert({
           id: item.id,
           store: storeName,
-          version: item.version,
+          version: Date.now(), // 或者使用 item.updatedAt 如果存在的话
         });
       }
-      // 如果不是静默操作，触发变更通知
       if (!silent) {
         this.notifyDataChanged();
       }
-      // 持久化同步视图
       await this.persistView();
-      return deltaResults;
+      return results;
     } catch (error) {
       console.error(`Failed to put bulk data to store ${storeName}:`, error);
       throw error;
@@ -293,17 +273,20 @@ export class Coordinator implements ICoordinator {
   // 持久化视图
   private async persistView(): Promise<void> {
     try {
-      const dataItem: DataItem = {
+      // 创建符合类型约束的对象
+      const serializedView: SerializedSyncView = {
         id: this.SYNC_VIEW_KEY,
-        data: this.syncView.serialize()
+        items: JSON.parse(this.syncView.serialize())
       };
-      await this.adapter.putBulk(this.SYNC_VIEW_STORE, [dataItem]);
+      await this.adapter.putBulk(
+        this.SYNC_VIEW_STORE,
+        [serializedView]
+      );
     } catch (error) {
       console.error('保存同步视图失败:', error);
       throw error;
     }
   }
-
 
 
 

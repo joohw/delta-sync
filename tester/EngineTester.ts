@@ -2,7 +2,13 @@
 
 import { SyncEngine } from '../core/SyncEngine';
 import { MemoryAdapter } from '../core/adapters';
-import { DataItem } from '../core/types';
+
+// 测试用的数据类型
+interface TestData {
+    id: string;
+    name: string;
+    value: number;
+}
 
 export class EngineTester {
     private localEngine: SyncEngine;
@@ -37,38 +43,30 @@ export class EngineTester {
         success: boolean;
         results: Record<string, { success: boolean; message: string }>;
     }> {
-        // 先初始化两个引擎
         await this.localEngine.initialize();
         await this.cloudEngine.initialize();
-
-        // 设置云端适配器
         await this.localEngine.setCloudAdapter(await this.cloudEngine.getlocalAdapter());
 
-        // 运行测试
         await this.runTest('基础数据同步', () => this.testBasicSync());
         await this.runTest('冲突数据同步', () => this.testConflictSync());
         await this.runTest('批量数据同步', () => this.testBatchSync());
         await this.runTest('文件同步', () => this.testFileSync());
         await this.runTest('删除同步', () => this.testDeleteSync());
 
-        const success = Object.values(this.testResults)
-            .every(result => result.success);
-
-        return {
-            success,
-            results: this.testResults
-        };
+        const success = Object.values(this.testResults).every(result => result.success);
+        return { success, results: this.testResults };
     }
 
     private async testBasicSync(): Promise<void> {
         const testStore = 'test_store';
-        const testDataItem: DataItem = {
+        const testData: TestData = {
             id: 'test-1',
-            data: { name: 'test', value: 123 }
+            name: 'test',
+            value: 123
         };
 
         // 在本地保存数据
-        const [savedItem] = await this.localEngine.save(testStore, testDataItem);
+        const [savedItem] = await this.localEngine.save<TestData>(testStore, testData);
 
         // 执行同步
         const syncResult = await this.localEngine.sync();
@@ -77,10 +75,10 @@ export class EngineTester {
         }
 
         // 通过云端引擎查询数据验证
-        const cloudQuery = await this.cloudEngine.query(testStore);
+        const cloudQuery = await this.cloudEngine.query<TestData>(testStore);
         const cloudItem = cloudQuery.items[0];
 
-        if (!cloudItem || cloudItem.name !== testDataItem.data.name) {
+        if (!cloudItem || cloudItem.name !== testData.name) {
             throw new Error('数据同步验证失败');
         }
     }
@@ -90,25 +88,27 @@ export class EngineTester {
         const conflictId = 'conflict-1';
 
         // 在本地创建数据
-        const localDataItem: DataItem = {
+        const localData: TestData = {
             id: conflictId,
-            data: { name: 'local', value: 1 }
+            name: 'local',
+            value: 1
         };
-        await this.localEngine.save(testStore, localDataItem);
+        await this.localEngine.save<TestData>(testStore, localData);
 
         // 在云端创建同一条数据的不同版本
-        const cloudDataItem: DataItem = {
+        const cloudData: TestData = {
             id: conflictId,
-            data: { name: 'cloud', value: 2 }
+            name: 'cloud',
+            value: 2
         };
-        await this.cloudEngine.save(testStore, cloudDataItem);
+        await this.cloudEngine.save<TestData>(testStore, cloudData);
 
         // 执行同步
         await this.localEngine.sync();
 
         // 查询本地和云端数据
-        const localQuery = await this.localEngine.query(testStore);
-        const cloudQuery = await this.cloudEngine.query(testStore);
+        const localQuery = await this.localEngine.query<TestData>(testStore);
+        const cloudQuery = await this.cloudEngine.query<TestData>(testStore);
 
         // 验证数据一致性
         if (JSON.stringify(localQuery.items) !== JSON.stringify(cloudQuery.items)) {
@@ -118,31 +118,32 @@ export class EngineTester {
 
     private async testBatchSync(): Promise<void> {
         const testStore = 'batch_store';
-        const batchDataItems: DataItem[] = Array.from(
+        const batchData: TestData[] = Array.from(
             { length: 10 },
             (_, i) => ({
                 id: `batch-${i}`,
-                data: { name: `item_${i}`, value: i }
+                name: `item_${i}`,
+                value: i
             })
         );
 
         // 批量保存数据
-        await this.localEngine.save(testStore, batchDataItems);
+        await this.localEngine.save<TestData>(testStore, batchData);
 
         // 执行同步
         await this.localEngine.sync();
 
         // 验证云端数据
-        const cloudQuery = await this.cloudEngine.query(testStore);
-        if (cloudQuery.items.length !== batchDataItems.length) {
+        const cloudQuery = await this.cloudEngine.query<TestData>(testStore);
+        if (cloudQuery.items.length !== batchData.length) {
             throw new Error('批量数据同步不完整');
         }
 
         // 验证数据内容
-        const allMatch = batchDataItems.every(item =>
+        const allMatch = batchData.every(item =>
             cloudQuery.items.some(cloudItem =>
-                cloudItem.name === item.data.name &&
-                cloudItem.value === item.data.value
+                cloudItem.name === item.name &&
+                cloudItem.value === item.value
             )
         );
 
@@ -182,30 +183,28 @@ export class EngineTester {
 
     private async testDeleteSync(): Promise<void> {
         const testStore = 'delete_store';
-        const testDataItem: DataItem = {
+        const testData: TestData = {
             id: 'delete-1',
-            data: { name: 'to_delete', value: 999 }
+            name: 'to_delete',
+            value: 999
         };
 
         // 先创建数据并同步到云端
-        await this.localEngine.save(testStore, testDataItem);
+        await this.localEngine.save<TestData>(testStore, testData);
         await this.localEngine.sync();
 
         // 在本地删除数据
-        await this.localEngine.delete(testStore, testDataItem.id);
+        await this.localEngine.delete(testStore, testData.id);
         await this.localEngine.sync();
 
         // 验证云端数据也被删除
-        const cloudQuery = await this.cloudEngine.query(testStore);
+        const cloudQuery = await this.cloudEngine.query<TestData>(testStore);
         if (cloudQuery.items.length !== 0) {
             throw new Error('删除操作同步失败');
         }
     }
 }
 
-/**
- * 运行同步引擎测试
- */
 export async function testEngineFunctionality(): Promise<{
     success: boolean;
     results: Record<string, { success: boolean; message: string }>;

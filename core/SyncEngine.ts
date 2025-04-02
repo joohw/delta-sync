@@ -9,7 +9,6 @@ import {
     SyncStatus,
     Attachment,
     FileItem,
-    DataItem,
     SyncResult,
     SyncOperationType,
     SyncQueryOptions,
@@ -20,7 +19,7 @@ import { Coordinator } from './Coordinator'
 
 
 export class SyncEngine implements ISyncEngine {
-    
+
     private localCoordinator: Coordinator;
     private cloudCoordinator?: Coordinator;
     private options: SyncOptions;
@@ -85,30 +84,23 @@ export class SyncEngine implements ISyncEngine {
 
 
     // 数据操作方法
-    async save<T extends Record<string, any>>(
+    async save<T extends { id: string }>(
         storeName: string,
-        data: DataItem | DataItem[]
+        data: T | T[]
     ): Promise<T[]> {
         await this.ensureInitialized();
-        // 统一转换为数组
         const items = Array.isArray(data) ? data : [data];
-        // 构造 DeltaModel 数组
-        const deltaItems = items.map(item => {
-            const deltaModel: DataChange<T> = {
-                id: item.id,
-                store: storeName,
-                data: item.data,
-                version: Date.now(), // 使用当前时间戳作为版本号
-                operation: 'put' as SyncOperationType
-            };
-            return deltaModel;
-        });
-        // 调用协调器的 putBulk 方法
-        const savedItems = await this.localCoordinator.putBulk(storeName, deltaItems, false);
-        // 从 DeltaModel 转换回原始数据类型
+        const changes: DataChange<T>[] = items.map(item => ({
+            id: item.id,
+            store: storeName,
+            data: item,
+            version: Date.now(), // 使用当前时间戳作为版本号
+            operation: 'put' as SyncOperationType
+        }));
+        const savedItems = await this.localCoordinator.putBulk(storeName, changes, false);
         return savedItems.map(item => item.data as T);
     }
-    
+
 
 
     async delete(storeName: string, ids: string | string[]): Promise<void> {
@@ -471,7 +463,7 @@ export class SyncEngine implements ISyncEngine {
         this.syncStatus = status;
         this.options.onStatusUpdate?.(status);
         if (process.env.NODE_ENV === 'development') {
-           // console.log('Sync status changed to:', SyncStatus[status]);
+            // console.log('Sync status changed to:', SyncStatus[status]);
         }
     }
 

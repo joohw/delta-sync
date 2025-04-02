@@ -20,11 +20,6 @@ export interface FileItem {
     content: Blob | ArrayBuffer | string,  // 文件的二进制数据
 }
 
-export interface DataItem {
-    id: string;
-    data: any;
-}
-
 
 export interface SyncQueryOptions {
     since?: number;      // 查询某个version之后的数据
@@ -67,8 +62,6 @@ export class SyncView {
         this.items = new Map();
         this.storeIndex = new Map();
     }
-
-
     // 添加或更新记录
     upsert(item: SyncViewItem): void {
         const key = this.getKey(item.store, item.id);
@@ -78,15 +71,12 @@ export class SyncView {
         }
         this.storeIndex.get(item.store)!.add(item.id);
     }
-
     // 批量更新
     upsertBatch(items: SyncViewItem[]): void {
         for (const item of items) {
             this.upsert(item);
         }
     }
-
-
     // 获取特定记录
     get(store: string, id: string): SyncViewItem | undefined {
         return this.items.get(this.getKey(store, id));
@@ -243,9 +233,19 @@ export interface SyncOptions {
 
 // 数据库适配器,支持任意类型的数据库
 export interface DatabaseAdapter {
-    readStore<T>(storeName: string, limit?: number, offset?: number): Promise<{ items: T[]; hasMore: boolean }>;
-    readBulk<T extends DataChange>(storeName: string, ids: string[]): Promise<T[]>;
-    putBulk(storeName: string, items: DataItem[]): Promise<any[]>;
+    readStore<T extends { id: string }>(
+        storeName: string,
+        limit?: number,
+        offset?: number
+    ): Promise<{ items: T[]; hasMore: boolean }>;
+    readBulk<T extends { id: string }>(
+        storeName: string,
+        ids: string[]
+    ): Promise<T[]>;
+    putBulk<T extends { id: string }>(
+        storeName: string,
+        items: T[]
+    ): Promise<T[]>;
     deleteBulk(storeName: string, ids: string[]): Promise<void>;
     readFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>>;
     saveFiles(files: FileItem[]): Promise<Attachment[]>;
@@ -288,10 +288,10 @@ export interface ISyncEngine {
     // 云端适配器设置
     setCloudAdapter(cloudAdapter: DatabaseAdapter): Promise<void>;
     // 数据操作
-    save<T extends Record<string, any>>(
-        storeName: string,                      // 存储名称
-        data: DataItem | DataItem[],           // 单个数据项或数据项数组
-    ): Promise<T[]>;
+    save<T extends { id: string }>(
+        storeName: string,
+        data: T | T[]
+    ): Promise<T[]>
     readFile(fileId: string): Promise<Blob | ArrayBuffer | null>;
     saveFile(fileId: string,
         file: File | Blob | ArrayBuffer,
