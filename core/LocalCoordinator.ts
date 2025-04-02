@@ -1,385 +1,222 @@
 // core/LocalCoordinator.ts
-// 本地的协调层，包装数据库适配器同时提供自动化的变更记录
 
 import {
-  DeltaModel,
+  ILocalCoordinator,
   DatabaseAdapter,
-  DataChange,
-  SyncOperationType,
+  DeltaModel,
+  SyncView,
   FileItem,
   Attachment,
-  AttachmentChange,
+  DataItem
 } from './types';
-import { EncryptionConfig } from './SyncConfig'
-
-interface VersionState extends DeltaModel {
-  value: number;
-}
 
 
-export class LocalCoordinator {
-  public localAdapter: DatabaseAdapter;
-  private encryptionConfig?: EncryptionConfig;
-  private readonly LOCAL_CHANGES_STORE = 'local_data_changes'; // 独立的变更表，记录所有数据修改
-  private readonly ATTACHMENT_CHANGES_STORE = 'local_attachment_changes'; // 新增附件变更表
-  private readonly META_STORE = 'local_meta'; // 改为更通用的meta存储表
-  private readonly VERSION_KEY = 'sync_version'; // 修改key名使其更明确
+export class LocalCoordinator implements ILocalCoordinator {
+  private syncView: SyncView;
+  private adapter: DatabaseAdapter;
+  private readonly SYNC_VIEW_STORE = 'local_sync_view';
+  private readonly SYNC_VIEW_KEY = 'current_view';
+  private initialized: boolean = false;
 
 
-  constructor(localAdapter: DatabaseAdapter, encryptionConfig?: EncryptionConfig) {
-    this.localAdapter = localAdapter;
-    this.encryptionConfig = encryptionConfig;
+  constructor(adapter: DatabaseAdapter) {
+    this.adapter = adapter;
+    this.syncView = new SyncView();
   }
 
 
-  // 写入数据并自动跟踪变更
-  async putBulk<T extends DeltaModel>(
-    storeName: string,
-    items: T[],
-    skipTracking: boolean = false
-  ): Promise<T[]> {
-    const version = Date.now();
-    const updatedItems = items.map(item => ({
-      ...item,
-      _version: version,
-    }));
-    const result = await this.localAdapter.putBulk(storeName, updatedItems);
-    if (!skipTracking) {
-      for (const item of updatedItems) {
-        await this.trackDataChange(
-          storeName,
-          item,
-          'put'
-        );
+  async initSync(): Promise<void> {
+    if (this.initialized) return;
+    try {
+      const result = await this.adapter.readBulk(
+        this.SYNC_VIEW_STORE,
+        [this.SYNC_VIEW_KEY]
+      );
+      if (result.length > 0 && result[0].data) {
+        this.syncView = SyncView.deserialize(result[0].data);
+      } else {
+        await this.rebuildSyncView();
       }
+      this.initialized = true;
+    } catch (error) {
+      console.error('初始化同步视图失败:', error);
+      throw error;
     }
-    return result;
   }
 
 
 
-  // 删除数据并且自动写入变更
-  async deleteBulk(
-    storeName: string,
-    ids: string[],
-    skipTracking: boolean = false
-  ): Promise<void> {
-    const items = await this.localAdapter.readBulk<DeltaModel>(storeName, ids);
-    for (const item of items) {
-      if (item._attachments) {
-        const attachmentIds = item._attachments
-          .filter(att => att.id && !att.missingAt)
-          .map(att => att.id);
-        if (attachmentIds.length > 0) {
-          await this.localAdapter.deleteFiles(attachmentIds);
-        }
-      }
+  async disposeSync(): Promise<void> {
+    try {
+      await this.persistView();
+      this.syncView.clear();
+      this.initialized = false;
+    } catch (error) {
+      console.error('清理同步视图失败:', error);
+      throw error;
     }
-    await this.localAdapter.deleteBulk(storeName, ids);
-    if (!skipTracking) {
-      const version = Date.now(); // 使用统一的当前时间戳
-      const changes = items.map(item => ({
-        id: item.id,
-        _version: version  // 使用新的时间戳
+  }
+
+
+
+  private async ensureInitialized(): Promise<void> {
+    if (!this.initialized) {
+      await this.initSync();
+    }
+  }
+
+
+  async getCurrentView(): Promise<SyncView> {
+    await this.ensureInitialized();
+    return this.syncView;
+  }
+
+
+  async readBulk(storeName: string, ids: string[]): Promise<any[]> {
+    try {
+      return await this.adapter.readBulk(storeName, ids);
+    } catch (error) {
+      console.error(`Failed to read bulk data from store ${storeName}:`, error);
+      throw error;
+    }
+  }
+
+
+
+  async putBulk<T>(storeName: string, items: T[]): Promise<T[]> {
+    try {
+      // 准备数据项
+      const dataItems: DataItem[] = items.map(item => ({
+        id: (item as any).id,
+        data: item
       }));
-      await Promise.all(changes.map(change =>
-        this.trackDataChange(storeName, change, 'delete')
-      ));
-    }
-  }
-
-
-
-
-  async attachFile(
-    modelId: string,
-    storeName: string,
-    file: File | Blob | ArrayBuffer,
-    filename: string,
-    mimeType: string,
-    metadata: any = {},
-  ): Promise<Attachment> {
-    // 首先获取原始模型
-    const items = await this.localAdapter.readBulk<DeltaModel>(storeName, [modelId]);
-    if (items.length === 0) {
-      throw new Error(`无法找到ID为 ${modelId} 的模型`);
-    }
-    const fileId = `attachment_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
-    const fileItem: FileItem = {
-      fileId: fileId,
-      content: file
-    };
-    // 保存文件到存储
-    const [savedAttachment] = await this.localAdapter.saveFiles([fileItem]);
-    const attachment: Attachment = {
-      id: savedAttachment.id,
-      filename: filename,
-      mimeType: mimeType, // 明确保留为必需参数
-      size: savedAttachment.size,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      metadata: metadata || {}
-    };
-    const model = items[0];
-    // 添加附件到模型
-    if (!model._attachments) {
-      model._attachments = [];
-    }
-    model._attachments.push(attachment);
-    const targetStoreName = model._store || storeName;
-    await this.putBulk(targetStoreName, [model]);
-    await this.trackAttachmentChange(
-      savedAttachment.id,
-      model._version || 0,
-      'put'
-    );
-    return attachment;
-  }
-
-
-
-
-  // 从模型中移除附件
-  async detachFile(
-    storeName: string,
-    modelId: string,
-    attachmentId: string
-  ): Promise<DeltaModel> {
-    // 1. 首先获取原始模型
-    const items = await this.localAdapter.readBulk<DeltaModel>(storeName, [modelId]);
-    if (items.length === 0) {
-      throw new Error(`Cannot find model with ID ${modelId} in store ${storeName}`);
-    }
-    const model = items[0];
-    if (!model._attachments) {
-      throw new Error(`Model ${modelId} has no attachments`);
-    }
-    // 2. 查找附件
-    const index = model._attachments.findIndex(att => att.id === attachmentId);
-    if (index === -1) {
-      throw new Error(`Attachment ${attachmentId} not found in model ${modelId}`);
-    }
-    try {
-      // 3. 删除物理文件
-      await this.localAdapter.deleteFiles([attachmentId]);
-      // 4. 创建模型的副本并更新附件列表
-      const updatedModel = {
-        ...model,
-        _attachments: [...model._attachments]
-      };
-      updatedModel._attachments.splice(index, 1);
-      // 5. 保存更新后的模型，这将触发变更记录
-      const [savedModel] = await this.putBulk(storeName, [updatedModel]);
-      await this.trackAttachmentChange(
-        attachmentId,
-        savedModel._version || 0,
-        'delete'
-      );
-      return savedModel;
-    } catch (error) {
-      console.error(`Error detaching file ${attachmentId} from model ${modelId}:`, error);
-      throw error;
-    }
-  }
-
-
-  // 记录附件变更
-  private async trackAttachmentChange(
-    attachmentId: string,      // 附件ID
-    version: number,          // 版本号
-    type: SyncOperationType,  // 操作类型
-  ): Promise<void> {
-    const attachmentChange: AttachmentChange = {
-      id: attachmentId,
-      _version: version,
-      type: type,
-    };
-    await this.localAdapter.putBulk(
-      this.ATTACHMENT_CHANGES_STORE,
-      [attachmentChange]
-    );
-    console.log(
-      `记录附件变更：attachmentId=${attachmentId}, ` +
-      `version=${version}, ` +
-      `type=${type}`
-    );
-  }
-
-
-  // 记录数据变更
-  private async trackDataChange<T extends DeltaModel>(
-    storeName: string,
-    data: T,
-    operationType: SyncOperationType,
-  ): Promise<void> {
-    const changeRecord: DataChange<T> = {
-      id: data.id,
-      _store: storeName,
-      _version: data._version || Date.now(),  // 使用数字时间戳
-      _operation: operationType,
-      data: operationType === 'put' ? data : undefined,
-    };
-    await this.localAdapter.putBulk(this.LOCAL_CHANGES_STORE, [changeRecord]);
-    console.log(
-      `记录待同步变更:
-      - 存储: ${storeName}
-      - ID: ${changeRecord.id}
-      - 操作: ${operationType}
-      - 时间: ${changeRecord._version}`  // 日志中展示可读格式
-    );
-  }
-
-
-  // 从云端同步数据
-  async applyDataChange<T extends DeltaModel>(changes: DataChange<T>[]): Promise<void> {
-    console.log('待应用的更改:', changes)
-    const changesByStore = new Map<string, { puts: T[], deletes: string[] }>();
-    for (const change of changes) {
-      if (!changesByStore.has(change._store)) {
-        changesByStore.set(change._store, { puts: [], deletes: [] });
-      }
-      const storeChanges = changesByStore.get(change._store)!;
-      if (change._operation === 'put' && change.data) {
-        storeChanges.puts.push(change.data as T);
-      } else if (change._operation === 'delete') {
-        storeChanges.deletes.push(change.id);
-      }
-    }
-    // 应用数据变更
-    for (const [storeName, storeChanges] of changesByStore.entries()) {
-      console.log(`Writing to store ${storeName}:`, {
-        puts: storeChanges.puts,
-        deletes: storeChanges.deletes
-      });
-      if (storeChanges.puts.length > 0) {
-        await this.localAdapter.putBulk(storeName, storeChanges.puts);
-      }
-      if (storeChanges.deletes.length > 0) {
-        await this.localAdapter.deleteBulk(storeName, storeChanges.deletes);
-      }
-    }
-  }
-
-
-
-  async applyAttachmentChanges(changes: AttachmentChange[]): Promise<void> {
-    try {
-      // 按照版本号排序
-      const sortedChanges = [...changes].sort((a, b) =>
-        (a._version || 0) - (b._version || 0)
-      );
-      // 记录成功处理的变更，以便后续更新状态
-      const processedChanges: AttachmentChange[] = [];
-      for (const change of sortedChanges) {
-        try {
-          // 标记为已同步
-          const markedChange = {
-            ...change,
-          };
-          // 保存变更记录到本地附件变更表
-          await this.localAdapter.putBulk(
-            this.ATTACHMENT_CHANGES_STORE,
-            [markedChange]
-          );
-          processedChanges.push(markedChange);
-          console.log(
-            `应用附件变更：attachmentId=${change.id}, ` +
-            `version=${change._version}, ` +
-            `type=${change.type}`
-          );
-        } catch (error) {
-          console.error(
-            `处理附件变更失败: attachmentId=${change.id}`,
-            error
-          );
+      // 保存数据
+      const results = await this.adapter.putBulk(storeName, dataItems);
+      // 更新同步视图
+      for (const item of results) {
+        if ('id' in item && 'version' in item) {
+          this.syncView.upsert({
+            id: item.id,
+            store: storeName,
+            version: item.version,
+            deleted: false
+          });
         }
       }
+      return results;
     } catch (error) {
-      console.error('应用附件变更时发生错误:', error);
+      console.error(`Failed to put bulk data to store ${storeName}:`, error);
       throw error;
     }
   }
 
 
 
-  // 获取待同步的变更记录
-  async getPendingChanges(since: number, limit: number = 100): Promise<DataChange[]> {
+  async deleteBulk(storeName: string, ids: string[]): Promise<void> {
+    await this.ensureInitialized();
     try {
-      const result = await this.localAdapter.readByVersion<DataChange>(
-        this.LOCAL_CHANGES_STORE,
-        {
-          since: since,
-          limit,
-          order: 'asc'
+      await this.adapter.deleteBulk(storeName, ids);
+      const version = Date.now();
+      for (const id of ids) {
+        this.syncView.upsert({
+          id,
+          store: storeName,
+          version,
+          deleted: true
+        });
+      }
+      await this.persistView();
+    } catch (error) {
+      console.error('删除数据失败:', error);
+      throw error;
+    }
+  }
+
+
+  async downloadFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>> {
+    await this.ensureInitialized();
+    return this.adapter.readFiles(fileIds);
+  }
+
+
+  async uploadFiles(files: FileItem[]): Promise<Attachment[]> {
+    await this.ensureInitialized();
+    const attachments = await this.adapter.saveFiles(files);
+    for (const attachment of attachments) {
+      this.syncView.upsertAttachment(attachment);
+    }
+    await this.persistView();
+    return attachments;
+  }
+
+
+  async deleteFiles(fileIds: string[]): Promise<void> {
+    await this.ensureInitialized();
+    const result = await this.adapter.deleteFiles(fileIds);
+    for (const deletedId of result.deleted) {
+      this.syncView.delete(SyncView['ATTACHMENT_STORE'], deletedId);
+    }
+    await this.persistView();
+  }
+
+
+  async getAdapter(): Promise<DatabaseAdapter> {
+    await this.ensureInitialized();
+    return this.adapter;
+  }
+
+
+  // 重建同步视图
+  private async rebuildSyncView(): Promise<void> {
+    try {
+      this.syncView.clear();
+      const stores = this.syncView.getStores();
+      for (const store of stores) {
+        let offset = 0;
+        const limit = 100;
+        while (true) {
+          const { items, hasMore } = await this.adapter.readStore<DeltaModel>(
+            store,
+            limit,
+            offset
+          );
+          for (const item of items) {
+            if (item.version) {
+              this.syncView.upsert({
+                id: item.id,
+                store: item.store,
+                version: item.version,
+                deleted: item.deleted
+              });
+            }
+          }
+          if (!hasMore) break;
+          offset += limit;
         }
-      );
-      console.log(`获取自 ${since} 依赖的待同步变更: ${result.items.length} 条`);
-      return result.items;
+      }
+      await this.persistView();
     } catch (error) {
-      console.error('获取待同步变更失败:', error);
-      return [];
+      console.error('重建同步视图失败:', error);
+      throw error;
     }
   }
 
 
-  // 获取待同步的附件变更
-  async getPendingAttachmentChanges(since: number, limit: number = 100): Promise<AttachmentChange[]> {
-    const result = await this.localAdapter.readByVersion<AttachmentChange>(
-      this.ATTACHMENT_CHANGES_STORE,
-      {
-        since: since,
-        limit: limit,
-        order: 'asc'
-      }
-    );
-    return result.items.sort((a, b) => (a._version || 0) - (b._version || 0));
-  }
-
-
-
-
-  async updateCurrentVersion(timestamp: number): Promise<void> {
+  // 持久化视图
+  private async persistView(): Promise<void> {
     try {
-      if (!Number.isInteger(timestamp) || timestamp < 0) {
-        throw new Error("时间戳必须是一个有效的正整数");
-      }
-      await this.localAdapter.putBulk(this.META_STORE, [{
-        id: this.VERSION_KEY,
-        value: timestamp
-      }]);
-      console.log(`成功更新同步时间戳: ${timestamp}`);
-    } catch (error) {
-      console.error("更新同步时间戳失败:", error);
-      throw new Error(`更新同步时间戳失败: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-
-
-  // 获取当前版本号(Todo优化查询方式)
-  async getCurrentVersion(): Promise<number> {
-    try {
-      const result = await this.localAdapter.readBulk<VersionState>(
-        this.META_STORE,
-        [this.VERSION_KEY]
-      );
-      if (result.length > 0) {
-        return result[0].value;
-      }
-      // 如果没有记录,初始化为0
-      const initialState: VersionState = {
-        id: this.VERSION_KEY,
-        _version: 0,
-        _store: this.META_STORE,
-        value: 0
+      const dataItem: DataItem = {
+        id: this.SYNC_VIEW_KEY,
+        data: this.syncView.serialize()
       };
-      await this.localAdapter.putBulk(this.META_STORE, [initialState]);
-      return 0;
+      await this.adapter.putBulk(this.SYNC_VIEW_STORE, [dataItem]);
     } catch (error) {
-      console.warn("读取同步时间戳失败:", error);
-      return 0;
+      console.error('保存同步视图失败:', error);
+      throw error;
     }
   }
+
+
 
 
 }

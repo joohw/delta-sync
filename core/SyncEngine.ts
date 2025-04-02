@@ -1,427 +1,377 @@
 // core/SyncEngine.ts
-// Provides a simple and easy-to-use synchronization client API, encapsulating internal synchronization complexity
 
 import {
-    DeltaModel,
+    ISyncEngine,
     DatabaseAdapter,
-    Attachment,
+    SyncOptions,
     DataChange,
-    DEFAULT_QUERY_OPTIONS,
-    QueryOptions
+    SyncView,
+    SyncStatus,
+    Attachment,
+    FileItem
 } from './types';
-import { LocalCoordinator } from './LocalCoordinator';
-import { CloudCoordinator } from './CloudCoordinator';
-import { SyncManager } from './SyncManager';
-import { EncryptionConfig } from './SyncConfig';
+import { LocalCoordinator } from './LocalCoordinator'
+import { CloudCoordinator } from './CloudCoordinator'
 
-
-
-// Synchronization status enumeration
-export enum SyncStatus {
-    Error = -2,        // Error status
-    Offline = -1,      // Offline status
-    Idle = 0,          // Idle status
-    Uploading = 1,     // Upload synchronization in progress
-    Downloading = 2,   // Download synchronization in progress
-    Operating = 3,     // Operation in progress (clearing notes and other special operations)
-}
-
-
-// Sync client initialization options
-export interface SyncEngineInitOptions {
-    localAdapter: DatabaseAdapter;
-    encryptionConfig?: EncryptionConfig;
-    syncOption?: SyncOptions;  // 将其他选项移到这个对象中
-}
-
-
-
-// Sync client options
-export interface SyncOptions {
-    autoSync?: {
-        enabled?: boolean;
-        interval?: number;
-        retryDelay?: number;
-    };
-    onStatusUpdate?: (status: SyncStatus) => void;
-    onVersionUpdate?: (version: number) => void;
-    onChangePulled?: (changes: DataChange[]) => void;
-    onChangePushed?: (changes: DataChange[]) => void;
-    encryption?: EncryptionConfig;    // 端到端的加密配置
-    maxRetries?: number;    // 最大重试次数
-    timeout?: number;       // 超时时间(毫秒)
-    maxFileSize?: number;   // 最大支持的文件大小(字节)
-    batchSize?: number;     // 同步批次的数量
-    payloadSize?: number;   // 传输的对象最大大小(字节)
-    fileChunkSize?: number; // 文件分块存储的单块大小(字节)
-}
-
-
-
-// Sync client, providing a simple and easy-to-use API to manage local data and synchronization operations
-export class SyncEngine {
-    private localAdapter: DatabaseAdapter;
+export class SyncEngine implements ISyncEngine {
     private localCoordinator: LocalCoordinator;
     private cloudCoordinator?: CloudCoordinator;
-    private syncManager?: SyncManager;
-    private syncOptions: SyncOptions = {
-        autoSync: {
-            enabled: false,
-            interval: 30000,
-            retryDelay: 5000
-        },
-        onStatusUpdate: undefined,
-        onVersionUpdate: undefined,
-        onChangePulled: undefined,
-        onChangePushed: undefined,
-        encryption: undefined,
-        maxRetries: 3,
-        timeout: 10000,
-        maxFileSize: 10000000,
-        batchSize: 100,
-        payloadSize: 100000,
-        fileChunkSize: 1000000       // 1MB
-    };
-    private autoSyncTimer?: NodeJS.Timeout;
-    private syncStatus: SyncStatus = SyncStatus.Offline;
-    private currentVersion: number = 0;
-    private cloudConfigured: boolean = false;
+    private options: SyncOptions;
+    private autoSyncTimer?: ReturnType<typeof setInterval>;
+    private syncStatus: SyncStatus = SyncStatus.IDLE;
+    private isInitialized: boolean = false;
 
 
+    constructor(
+        localAdapter: DatabaseAdapter,
+        options: SyncOptions = {}
+    ) {
+        this.localCoordinator = new LocalCoordinator(localAdapter);
+        this.options = this.mergeDefaultOptions(options);
+    }
 
-    // Create sync client
-    constructor(options: SyncEngineInitOptions) {
-        this.localAdapter = options.localAdapter;
-        this.localCoordinator = new LocalCoordinator(
-            this.localAdapter,
-            options.encryptionConfig
-        );
-        if (options.syncOption) {
-            this.updateSyncOptions(options.syncOption);
-        }
-        this.initialize();
+    private mergeDefaultOptions(options: SyncOptions): SyncOptions {
+        return {
+            autoSync: {
+                enabled: false,
+                interval: 5000,
+                retryDelay: 1000,
+                ...options.autoSync
+            },
+            maxRetries: 3,
+            timeout: 30000,
+            batchSize: 100,
+            maxFileSize: 10 * 1024 * 1024, // 10MB
+            fileChunkSize: 1024 * 1024, // 1MB
+            ...options
+        };
     }
 
 
-    // Initialize local coordinator
-    private async initialize(): Promise<void> {
+    async initialize(): Promise<void> {
+        if (this.isInitialized) return;
         try {
-            this.updateSyncStatus(SyncStatus.Operating);
-            const version = await this.localCoordinator.getCurrentVersion();
-            this.currentVersion = version;
-            this.updateSyncStatus(SyncStatus.Idle);
+            if (this.options.autoSync?.enabled) {
+                this.enableAutoSync(this.options.autoSync.interval);
+            }
+            this.isInitialized = true;
         } catch (error) {
-            this.updateSyncStatus(SyncStatus.Error);
-            console.error("Local storage initialization failed:", error);
+            console.error('初始化同步引擎失败:', error);
             throw error;
         }
     }
 
 
-    // enableAutoSync
-    public enableAutoSync(interval?: number): void {
-        if (interval) {
-            this.syncOptions.autoSync!.interval = interval;
-        }
-        if (this.syncOptions.autoSync?.enabled) {
-            return;
-        }
-        this.syncOptions.autoSync!.enabled = true;
-        this.scheduleNextSync();
-        console.log(`自动同步已启用，间隔: ${this.syncOptions.autoSync?.interval}ms`);
-    }
-
-
-    // disableAutoSync
-    public disableAutoSync(): void {
-        if (this.syncOptions.autoSync) {
-            this.syncOptions.autoSync.enabled = false;
-        }
-        if (this.autoSyncTimer) {
-            clearTimeout(this.autoSyncTimer);
-            this.autoSyncTimer = undefined;
-        }
-        console.log('自动同步已禁用');
-    }
-
-
-    // scheduleNextSync
-    private async scheduleNextSync(): Promise<void> {
-        if (!this.syncOptions.autoSync?.enabled) {
-            return;
-        }
-        try {
-            const syncResult = await this.sync();
-            if (syncResult) {
-                this.autoSyncTimer = setTimeout(
-                    () => this.scheduleNextSync(),
-                    this.syncOptions.autoSync!.interval
-                );
-            } else {
-                this.autoSyncTimer = setTimeout(
-                    () => this.scheduleNextSync(),
-                    this.syncOptions.autoSync!.retryDelay
-                );
-            }
-        } catch (error) {
-            console.error('自动同步执行失败:', error);
-            this.autoSyncTimer = setTimeout(
-                () => this.scheduleNextSync(),
-                this.syncOptions.autoSync!.retryDelay
-            );
+    private async ensureInitialized(): Promise<void> {
+        if (!this.isInitialized) {
+            await this.initialize();
         }
     }
 
 
-    // Update synchronization options
-    public updateSyncOptions(options: Partial<SyncOptions>): void {
-        this.syncOptions = {
-            ...this.syncOptions,
-            ...options,
-            autoSync: options.autoSync ? {
-                ...this.syncOptions.autoSync,
-                ...options.autoSync
-            } : this.syncOptions.autoSync
-        };
-        if (this.syncOptions.autoSync?.enabled) {
-            this.enableAutoSync();
-        } else if (options.autoSync?.enabled === false) {
-            this.disableAutoSync();
-        }
-    }
-
-
-    // Set cloud adapter, enable synchronization functionality
     async setCloudAdapter(cloudAdapter: DatabaseAdapter): Promise<void> {
         this.cloudCoordinator = new CloudCoordinator(cloudAdapter);
-        try {
-            this.updateSyncStatus(SyncStatus.Operating);
-            this.syncManager = new SyncManager(
-                this.localCoordinator,
-                this.cloudCoordinator
-            );
-            this.cloudConfigured = true;
-            this.updateSyncStatus(SyncStatus.Idle);
-        } catch (error) {
-            this.cloudConfigured = false;
-            this.updateSyncStatus(SyncStatus.Error);
-            console.error("Cloud adapter initialization failed:", error);
-            this.cloudCoordinator = undefined;
-            throw error;
-        }
     }
 
 
-    private updateSyncStatus(status: SyncStatus): void {
-        this.syncStatus = status;
-        if (this.syncOptions.onStatusUpdate) {
-            this.syncOptions.onStatusUpdate(status);
-        }
-    }
-
-
-    // Query data
-    async query<T extends DeltaModel>(storeName: string, options?: QueryOptions): Promise<T[]> {
-        try {
-            const result = await this.localAdapter.readByVersion<T>(
-                storeName,
-                options || DEFAULT_QUERY_OPTIONS
-            );
-            return result.items;
-        } catch (error) {
-            throw new Error
-        }
-    }
-
-
-
-    // Save data to specified storage
-    async save<T extends DeltaModel>(storeName: string, data: T | T[]): Promise<T[]> {
+    // 数据操作方法
+    async save<T extends Record<string, any>>(
+        storeName: string,
+        data: T | T[],
+        id?: string | string[]
+    ): Promise<T[]> {
+        await this.ensureInitialized();
         const items = Array.isArray(data) ? data : [data];
-        return await this.localCoordinator.putBulk(storeName, items);
+        const ids = Array.isArray(id) ? id : id ? [id] : [];
+        // 准备要保存的数据
+        const deltaItems = items.map((item, index) => ({
+            ...item,
+            id: ids[index] || this.generateId(),
+            store: storeName
+        }));
+        // 保存到本地
+        const savedItems = await this.localCoordinator.putBulk(storeName, deltaItems);
+        // 返回原始数据类型，移除内部使用的元数据字段
+        return savedItems.map(item => {
+            const { store, version, deleted, ...userData } = item;
+            return userData as T;
+        });
     }
 
 
-
-    // Delete data from specified storage
     async delete(storeName: string, ids: string | string[]): Promise<void> {
-        const itemIds = Array.isArray(ids) ? ids : [ids];
-        await this.localCoordinator.deleteBulk(storeName, itemIds);
-    }
-
-
-    // readSingleFile
-    async readFile(fileId: string): Promise<Blob | ArrayBuffer | null> {
-        if (!fileId) {
-            throw new Error('File ID is required');
-        }
-        try {
-            const filesMap = await this.localCoordinator.localAdapter.readFiles([fileId]);
-            return filesMap.get(fileId) || null;
-        } catch (error) {
-            console.error(`Error reading file ${fileId}:`, error);
-            throw error;
-        }
+        await this.ensureInitialized();
+        const idsToDelete = Array.isArray(ids) ? ids : [ids];
+        await this.localCoordinator.deleteBulk(storeName, idsToDelete);
     }
 
 
 
-    // Attach file to specified model
-    async attach(
-        storeId: string,
-        modelId: string,
+    async saveFile(
+        fileId: string,
         file: File | Blob | ArrayBuffer,
         filename: string,
         mimeType: string,
-        metadata: any = {}
+        metadata: Record<string, any> = {}
     ): Promise<Attachment> {
-        if (!storeId) {
-            throw new Error('Store name is required');
+        await this.ensureInitialized();
+        try {
+            // 验证文件大小
+            const fileSize = file instanceof ArrayBuffer ? file.byteLength : file.size;
+            if (fileSize > this.options.maxFileSize!) {
+                throw new Error(`File size exceeds limit of ${this.options.maxFileSize} bytes`);
+            }
+            // 准备文件项
+            const fileItem: FileItem = {
+                fileId,
+                content: file
+            };
+            // 上传文件
+            const [attachment] = await this.localCoordinator.uploadFiles([fileItem]);
+            // 更新附件信息
+            const updatedAttachment: Attachment = {
+                ...attachment,
+                filename,
+                mimeType,
+                metadata,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                size: fileSize
+            };
+            return updatedAttachment;
+        } catch (error) {
+            console.error('Failed to save file:', error);
+            throw error;
         }
-        if (!modelId) {
-            throw new Error('Model ID is required');
-        }
-        return this.localCoordinator.attachFile(
-            modelId,
-            storeId,
-            file,
-            filename,
-            mimeType,
-            metadata
-        );
-    }
-
-
-    // Detach file from specified model
-    async detach(
-        storeName: string,
-        modelId: string,
-        attachmentId: string
-    ): Promise<DeltaModel> {
-        if (!storeName) {
-            throw new Error('Store name is required');
-        }
-        if (!modelId) {
-            throw new Error('Model ID is required');
-        }
-        if (!attachmentId) {
-            throw new Error('Attachment ID is required');
-        }
-        return this.localCoordinator.detachFile(storeName, modelId, attachmentId);
     }
 
 
 
+    async readFile(fileId: string): Promise<Blob | ArrayBuffer | null> {
+        await this.ensureInitialized();
+        try {
+            const files = await this.localCoordinator.downloadFiles([fileId]);
+            return files.get(fileId) || null;
+        } catch (error) {
+            console.error('Failed to read file:', error);
+            throw error;
+        }
+    }
+
+
+    // 同步操作方法
     async sync(): Promise<boolean> {
-        if (!this.syncManager) {
-            console.error("云同步源未配置，请先调用 setCloudAdapter");
+        if (this.syncStatus !== SyncStatus.IDLE) {
+            console.warn('Sync already in progress, current status:', this.syncStatus);
+            return false;
+        }
+        if (!this.cloudCoordinator) {
+            console.warn('Cloud adapter not set');
+            this.updateStatus(SyncStatus.OFFLINE);
             return false;
         }
         try {
-            this.updateSyncStatus(SyncStatus.Downloading);
+            // Download phase
+            this.updateStatus(SyncStatus.DOWNLOADING);
             const pullSuccess = await this.pull();
             if (!pullSuccess) {
-                console.error("同步操作中拉取云端数据失败");
-                return false;
+                throw new Error('Pull operation failed');
             }
-            this.updateSyncStatus(SyncStatus.Uploading);
+            // Upload phase
+            this.updateStatus(SyncStatus.UPLOADING);
             const pushSuccess = await this.push();
-            this.updateSyncStatus(pushSuccess ? SyncStatus.Idle : SyncStatus.Error);
-            return pushSuccess;
+            if (!pushSuccess) {
+                throw new Error('Push operation failed');
+            }
+            this.updateStatus(SyncStatus.IDLE);
+            return true;
         } catch (error) {
-            this.updateSyncStatus(SyncStatus.Error);
-            console.error("同步操作失败:", error);
+            console.error('Sync failed:', error);
+            this.updateStatus(SyncStatus.ERROR);
             return false;
         }
     }
 
 
-    // Only push local changes to cloud
     async push(): Promise<boolean> {
-        if (!this.syncManager) {
-            console.error("Cloud sync source not configured, please call setCloudAdapter first");
-            return false;
+        if (!this.cloudCoordinator) {
+            this.updateStatus(SyncStatus.OFFLINE);
+            throw new Error('Cloud adapter not set');
         }
         try {
-            this.updateSyncStatus(SyncStatus.Uploading);
-            const result = await this.syncManager.pushChanges();
-            if (result.success) {
-                if (result.version) {
-                    this.currentVersion = result.version;
-                    if (this.syncOptions.onVersionUpdate) {
-                        this.syncOptions.onVersionUpdate(result.version);
-                    }
-                }
-                if (this.syncOptions.onChangePushed && result.changes) {
-                    this.syncOptions.onChangePushed(result.changes);
-                }
+            this.updateStatus(SyncStatus.UPLOADING);
+            // Get views
+            const localView = await this.localCoordinator.getCurrentView();
+            const cloudView = await this.cloudCoordinator.getCurrentView();
+            // Calculate differences
+            const { toUpload } = SyncView.diffViews(localView, cloudView);
+            if (toUpload.length === 0) {
+                this.updateStatus(SyncStatus.IDLE);
+                return true;
             }
-            this.updateSyncStatus(result.success ? SyncStatus.Idle : SyncStatus.Error);
-            return result.success;
+            // Process in batches
+            const batches = this.splitIntoBatches(toUpload, this.options.batchSize!);
+            for (const batch of batches) {
+                // Read complete data
+                const items = await this.localCoordinator.readBulk(
+                    batch[0].store,
+                    batch.map(item => item.id)
+                );
+                // Upload changes
+                await this.cloudCoordinator.applyChanges(items.map(item => ({
+                    id: item.id,
+                    store: item.store,
+                    version: item.version,
+                    operation: item.deleted ? 'delete' : 'put',
+                    data: item.data
+                })));
+            }
+
+            // Report progress if callback provided
+            this.options.onChangePushed?.(
+                toUpload.map(item => ({
+                    id: item.id,
+                    store: item.store,
+                    version: item.version,
+                    operation: item.deleted ? 'delete' : 'put',
+                    data: null
+                }))
+            );
+            this.updateStatus(SyncStatus.IDLE);
+            return true;
         } catch (error) {
-            this.updateSyncStatus(SyncStatus.Error);
-            console.error("Push operation failed:", error);
+            console.error('Push failed:', error);
+            this.updateStatus(SyncStatus.ERROR);
             return false;
         }
     }
 
 
-    // Only pull changes from cloud
+
     async pull(): Promise<boolean> {
-        if (!this.syncManager) {
-            console.error("Cloud sync source not configured, please call setCloudAdapter first");
-            return false;
+        if (!this.cloudCoordinator) {
+            this.updateStatus(SyncStatus.OFFLINE);
+            throw new Error('Cloud adapter not set');
         }
         try {
-            this.updateSyncStatus(SyncStatus.Downloading);
-            const result = await this.syncManager.pullChanges();
-            if (result.success) {
-                if (result.version) {
-                    this.currentVersion = result.version;
-                    if (this.syncOptions.onVersionUpdate) {
-                        this.syncOptions.onVersionUpdate(result.version);
-                    }
-                }
-                if (this.syncOptions.onChangePulled && result.changes) {
-                    this.syncOptions.onChangePulled(result.changes);
+            this.updateStatus(SyncStatus.DOWNLOADING);
+            // Get views
+            const localView = await this.localCoordinator.getCurrentView();
+            const cloudView = await this.cloudCoordinator.getCurrentView();
+            // Calculate differences
+            const { toDownload } = SyncView.diffViews(localView, cloudView);
+            if (toDownload.length === 0) {
+                this.updateStatus(SyncStatus.IDLE);
+                return true;
+            }
+            // Download and process in batches
+            const batches = this.splitIntoBatches(toDownload, this.options.batchSize!);
+            const downloadedChanges: DataChange[] = [];
+            for (const batch of batches) {
+                // Read from cloud
+                const items = await this.cloudCoordinator.readBulk(
+                    batch[0].store,
+                    batch.map(item => item.id)
+                );
+                // Save to local
+                for (const item of items) {
+                    await this.localCoordinator.putBulk(item.store, [item]);
+                    downloadedChanges.push({
+                        id: item.id,
+                        store: item.store,
+                        version: item.version,
+                        operation: item.deleted ? 'delete' : 'put',
+                        data: item.data
+                    });
                 }
             }
-            this.updateSyncStatus(result.success ? SyncStatus.Idle : SyncStatus.Error);
-            return result.success;
+            // Report progress if callback provided
+            this.options.onChangePulled?.(downloadedChanges);
+            this.updateStatus(SyncStatus.IDLE);
+            return true;
         } catch (error) {
-            this.updateSyncStatus(SyncStatus.Error);
-            console.error("Pull operation failed:", error);
+            console.error('Pull failed:', error);
+            this.updateStatus(SyncStatus.ERROR);
             return false;
         }
     }
 
 
-    // Access underlying coordination layer
-    getlocalCoordinator(): LocalCoordinator {
+    // 自动同步控制
+    enableAutoSync(interval?: number): void {
+        if (this.autoSyncTimer) {
+            clearInterval(this.autoSyncTimer);
+        }
+        const syncInterval = interval || this.options.autoSync?.interval || 5000;
+        this.autoSyncTimer = setInterval(async () => {
+            await this.sync();
+        }, syncInterval);
+    }
+
+    disableAutoSync(): void {
+        if (this.autoSyncTimer) {
+            clearInterval(this.autoSyncTimer);
+            this.autoSyncTimer = undefined;
+        }
+    }
+
+    // 配置更新
+    updateSyncOptions(options: Partial<SyncOptions>): void {
+        this.options = this.mergeDefaultOptions({
+            ...this.options,
+            ...options
+        });
+        // 如果更新了自动同步设置，重新配置自动同步
+        if (options.autoSync) {
+            if (options.autoSync.enabled) {
+                this.enableAutoSync(options.autoSync.interval);
+            } else {
+                this.disableAutoSync();
+            }
+        }
+    }
+
+    // 实例获取
+    async getlocalCoordinator(): Promise<LocalCoordinator> {
         return this.localCoordinator;
     }
 
-    // Access underlying local storage adapter
-    getlocalAdapter(): DatabaseAdapter {
-        return this.localAdapter;
+    async getlocalAdapter(): Promise<DatabaseAdapter> {
+        return await this.localCoordinator.getAdapter();
     }
 
-    // Access underlying cloud coordination layer
-    getSyncOptions(): SyncOptions {
-        return { ...this.syncOptions };
-    }
-
-
+    // 清理方法
     dispose(): void {
         this.disableAutoSync();
+        this.syncStatus = SyncStatus.OFFLINE;
     }
 
-    // Disconnect cloud connection, return to local mode
-    public disconnectCloud(): void {
+    disconnectCloud(): void {
         this.cloudCoordinator = undefined;
-        this.syncManager = undefined;
-        this.updateSyncStatus(SyncStatus.Offline);
-        console.log("Cloud connection disconnected, now in local mode");
+    }
+
+
+    // 私有辅助方法
+    private updateStatus(status: SyncStatus): void {
+        if (this.syncStatus === status) return;
+        this.syncStatus = status;
+        this.options.onStatusUpdate?.(status);
+        // Log status changes in development
+        if (process.env.NODE_ENV !== 'production') {
+            console.log('Sync status changed to:', SyncStatus[status]);
+        }
+    }
+
+    private generateId(): string {
+        return `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+
+    private splitIntoBatches<T>(items: T[], batchSize: number): T[][] {
+        const batches: T[][] = [];
+        for (let i = 0; i < items.length; i += batchSize) {
+            batches.push(items.slice(i, i + batchSize));
+        }
+        return batches;
     }
 
 }

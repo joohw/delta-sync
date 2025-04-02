@@ -1,137 +1,177 @@
-// CloudCoordinator.ts
-// 云端的协调层
+// core/CloudCoordinator.ts
 
 import {
+    ICloudCoordinator,
     DatabaseAdapter,
-    SyncResponse,
-    DataChange,
-    AttachmentChange
+    DeltaModel,
+    SyncView,
+    FileItem,
+    Attachment,
+    DataItem,
+    DataChange
 } from './types';
 
 
-export class CloudCoordinator {
-    public cloudAdapter: DatabaseAdapter;
-    public readonly CHANGES_STORE = 'cloud_synced_changes'; // 所有变更的存储
-    public readonly ATTACHMENT_CHANGES_STORE = 'cloud_attachment_changes'; // 新增附件变更表
+export class CloudCoordinator implements ICloudCoordinator {
+    private syncView: SyncView;
+    private adapter: DatabaseAdapter;
+    private initialized: boolean = false;
+    private readonly DELTA_STORE = 'cloud_deltas';
+    private readonly SYNC_VIEW_STORE = 'cloud_sync_view';
+    private readonly SYNC_VIEW_KEY = 'current_view';
 
 
-    constructor(cloudAdapter: DatabaseAdapter) {
-        this.cloudAdapter = cloudAdapter;
+    constructor(adapter: DatabaseAdapter) {
+        this.adapter = adapter;
+        this.syncView = new SyncView();
     }
 
 
-    // 处理来自客户端的同步请求
-    async applyChanges(changes: DataChange[]): Promise<SyncResponse> {
+    private async ensureInitialized(): Promise<void> {
+        if (this.initialized) return;
         try {
-            // 获取服务器当前时间戳作为版本号
-            const serverTimestamp = Date.now();
-            const updatedChanges = changes.map(change => ({
-                ...change,
-                _version: serverTimestamp
-            }));
-            await this.cloudAdapter.putBulk(this.CHANGES_STORE, updatedChanges);
-            return {
-                success: true,
-                processed: changes.length,
-                version: serverTimestamp,  // 使用服务器时间戳作为版本号
-                changes: updatedChanges    // 可选：返回更新后的变更记录
-            };
-        } catch (error: unknown) {
-            console.error('处理同步请求时出错:', error);
-            return {
-                success: false,
-                error: this.getErrorMessage(error)
-            };
-        }
-    }
-
-    async applyAttachmentChanges(changes: AttachmentChange[]): Promise<SyncResponse> {
-        try {
-            await this.cloudAdapter.putBulk(this.ATTACHMENT_CHANGES_STORE, changes);
-            const latestVersion = await this.getLatestVersion();
-            return {
-                success: true,
-                processed: changes.length,
-                version: latestVersion,  // 使用实际的最新版本号
-                info: {
-                    attachments_processed: changes.length
-                }
-            };
-        } catch (error) {
-            return {
-                success: false,
-                error: this.getErrorMessage(error)
-            };
-        }
-    }
-
-
-    async getAttachmentChanges(since: number): Promise<AttachmentChange[]> {
-        const result = await this.cloudAdapter.readByVersion<AttachmentChange>(
-            this.ATTACHMENT_CHANGES_STORE,
-            { since }
-        );
-        return result.items;
-    }
-
-
-    // 处理来自客户端的拉取请求（使用 since 参数表示最小版本号）
-    async getPendingChanges(since: number): Promise<SyncResponse> {
-        try {
-            const result = await this.cloudAdapter.readByVersion<DataChange>(
-                this.CHANGES_STORE, 
-                { since }
+            const result = await this.adapter.readBulk(
+                this.SYNC_VIEW_STORE,
+                [this.SYNC_VIEW_KEY]
             );
-            console.log("从云端读取更新成功",result)
-            const latestVersion = await this.getLatestVersion();
-            return {
-                success: true,
-                changes: result.items,
-                version: latestVersion,
-            };
-        } catch (error: unknown) {
-            console.error('获取变更失败:', error);
-            return {
-                success: false,
-                error: this.getErrorMessage(error)
-            };
-        }
-    }
-
-
-    // 辅助方法，在结果中附加详细错误
-    private getErrorMessage(error: unknown): string {
-        if (error instanceof Error) {
-            return error.message;
-        } else if (typeof error === 'string') {
-            return error;
-        } else if (error && typeof error === 'object' && 'message' in error) {
-            return String((error as { message: unknown }).message);
-        }
-        return '未知错误';
-    }
-
-
-
-    // 获取最新变更的版本号(优化查询方式)
-    async getLatestVersion(): Promise<number> {
-        try {
-            const result = await this.cloudAdapter.readByVersion<DataChange>(
-                this.CHANGES_STORE,
-                {
-                    limit: 1,
-                    order: 'desc' // 直接使用倒序排列
-                }
-            );
-            if (result.items.length > 0 && result.items[0]._version !== undefined) {
-                return result.items[0]._version;
+            if (result.length > 0 && result[0].data) {
+                this.syncView = SyncView.deserialize(result[0].data);
+            } else {
+                // 如果没有存储的视图，重建
+                await this.rebuildSyncView();
             }
-            return 0;
+            this.initialized = true;
         } catch (error) {
-            console.error('获取最新版本号失败:', error);
-            return 0;
+            console.error('初始化云端同步视图失败:', error);
+            throw error;
         }
     }
 
+
+    // 实现接口方法
+    async getCurrentView(): Promise<SyncView> {
+        await this.ensureInitialized();
+        return this.syncView;
+    }
+
+
+    async readBulk(storeName: string, ids: string[]): Promise<any[]> {
+        await this.ensureInitialized();
+        const cloudKeys = ids.map(id => this.getCloudKey(storeName, id));
+        const results = await this.adapter.readBulk(this.DELTA_STORE, cloudKeys);
+        return results.map(item => item?.data || null);
+    }
+
+
+    async applyChanges(changes: DataChange[]): Promise<void> {
+        await this.ensureInitialized();
+        try {
+            const version = Date.now();
+            const items: DataItem[] = changes.map(change => ({
+                id: this.getCloudKey(change.store, change.id),
+                data: change.operation === 'delete' ? null : change.data
+            }));
+            // 批量保存到单一存储
+            await this.adapter.putBulk(this.DELTA_STORE, items);
+            // 更新视图
+            for (const change of changes) {
+                this.syncView.upsert({
+                    id: change.id,
+                    store: change.store,
+                    version: version,
+                    deleted: change.operation === 'delete'
+                });
+            }
+            // 持久化视图
+            await this.persistView();
+        } catch (error) {
+            console.error('应用云端变更失败:', error);
+            throw error;
+        }
+    }
+
+
+    async downloadFiles(fileIds: string[]): Promise<Map<string, Blob | ArrayBuffer | null>> {
+        return this.adapter.readFiles(fileIds);
+    }
+
+
+    async uploadFiles(files: FileItem[]): Promise<Attachment[]> {
+        const attachments = await this.adapter.saveFiles(files);
+        // 更新视图
+        for (const attachment of attachments) {
+            this.syncView.upsertAttachment(attachment);
+        }
+        await this.persistView();
+        return attachments;
+    }
+
+
+    async deleteFiles(fileIds: string[]): Promise<void> {
+        const result = await this.adapter.deleteFiles(fileIds);
+        // 更新视图
+        for (const deletedId of result.deleted) {
+            this.syncView.delete(SyncView['ATTACHMENT_STORE'], deletedId);
+        }
+        await this.persistView();
+    }
+
+
+
+    private async persistView(): Promise<void> {
+        try {
+            await this.adapter.putBulk(this.SYNC_VIEW_STORE, [{
+                id: this.SYNC_VIEW_KEY,
+                data: this.syncView.serialize()
+            }]);
+        } catch (error) {
+            console.error('保存云端同步视图失败:', error);
+            throw error;
+        }
+    }
+
+
+
+
+    private async rebuildSyncView(): Promise<void> {
+        try {
+            this.syncView.clear();
+            let offset = 0;
+            const limit = 100;
+            while (true) {
+                const { items, hasMore } = await this.adapter.readStore<DataItem>(
+                    this.DELTA_STORE,
+                    limit,
+                    offset
+                );
+                for (const item of items) {
+                    const [store, originalId] = this.getOrigianlKey(item.id);
+                    if (!store || !originalId) continue;
+                    this.syncView.upsert({
+                        id: originalId,
+                        store: store,
+                        version: Date.now(), // 或者从数据中获取版本号
+                        deleted: item.data === null
+                    });
+                }
+                if (!hasMore) break;
+                offset += limit;
+            }
+            await this.persistView();
+        } catch (error) {
+            console.error('重建云端同步视图失败:', error);
+            throw error;
+        }
+    }
+
+
+    // 生成云端存储的复合键
+    private getCloudKey(store: string, id: string): string {
+        return `${store}:${id}`;
+    }
+
+    private getOrigianlKey(cloudKey: string): [string, string] {
+        return cloudKey.split(':') as [string, string];
+    }
 
 }
