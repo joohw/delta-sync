@@ -39,15 +39,12 @@ describe('**SyncView Size Analysis**', () => {
             syncView.clear();
 
             console.log(`\nTesting with ${volume} items...`);
-
             // 分批生成和插入数据，避免内存压力
             const BATCH_SIZE = 1000;
             const totalBatches = Math.ceil(volume / BATCH_SIZE);
-
             let totalDeletedItems = 0;
             let totalAttachments = 0;
             const storesSet = new Set<string>();
-
             const insertStartTime = performance.now();
 
             for (let batch = 0; batch < totalBatches; batch++) {
@@ -57,30 +54,24 @@ describe('**SyncView Size Analysis**', () => {
                     { length: end - start },
                     (_, i) => generateRealisticSyncViewItem(start + i)
                 );
-
                 // 统计信息
                 items.forEach(item => {
                     storesSet.add(item.store);
                     if (item.deleted) totalDeletedItems++;
                     if (item.isAttachment) totalAttachments++;
                 });
-
                 syncView.upsertBatch(items);
             }
-
             const insertTime = performance.now() - insertStartTime;
             console.log(`Insert time: ${insertTime.toFixed(2)}ms`);
-
             // 序列化测试
             const serializeStartTime = performance.now();
             const serialized = syncView.serialize();
             const serializationTime = performance.now() - serializeStartTime;
-
             // 计算大小
             const sizeInBytes = new TextEncoder().encode(serialized).length;
             const sizeInMB = sizeInBytes / (1024 * 1024);
             const avgItemSizeInBytes = sizeInBytes / volume;
-
             results.push({
                 items: volume,
                 sizeInMB: sizeInMB,
@@ -90,7 +81,6 @@ describe('**SyncView Size Analysis**', () => {
                 deletedItems: totalDeletedItems,
                 attachments: totalAttachments
             });
-
             // 验证数据完整性
             expect(syncView.size()).toBe(volume);
         }
@@ -123,7 +113,6 @@ describe('**SyncView Size Analysis**', () => {
             console.log(`Number of Stores: ${result100k.stores}`);
             console.log(`Deleted Items: ${result100k.deletedItems} (${(result100k.deletedItems/100000*100).toFixed(1)}%)`);
             console.log(`Attachments: ${result100k.attachments} (${(result100k.attachments/100000*100).toFixed(1)}%)`);
-
             // 分片建议
             const TARGET_SHARD_SIZE_MB = 4;
             const suggestedShardSize = Math.ceil(100000 / Math.ceil(result100k.sizeInMB / TARGET_SHARD_SIZE_MB));
@@ -132,7 +121,6 @@ describe('**SyncView Size Analysis**', () => {
             console.log(`- Expected number of shards for 100k items: ${Math.ceil(100000 / suggestedShardSize)}`);
             console.log(`- Expected shard size: ${(result100k.sizeInMB / Math.ceil(100000 / suggestedShardSize)).toFixed(2)}MB`);
         }
-
         // 内存使用分析
         const memory = process.memoryUsage();
         console.log('\n📈 Memory Usage:');
