@@ -288,24 +288,26 @@ export class Coordinator implements ICoordinator {
     await this.ensureInitialized();
     const { since = 0, offset = 0, limit = 100 } = options;
     try {
-      // 1. 从视图中读取数据并且筛选
-      let items = this.syncView.getByStore(storeName);
-      if (since > 0) {
-        items = items.filter(item => item.version > since);
-      }
-      // 2. 应用分页
-      const paginatedItems = items.slice(offset, offset + limit);
-      // 3. 读取完整数据
-      const results = await this.readBulk<T>(
+      // 从适配器直接读取数据
+      const result = await this.adapter.readStore<T>(
         storeName,
-        paginatedItems.map(item => item.id)
+        limit,
+        offset
       );
-      return {
-        items: results,
-        hasMore: items.length > offset + limit
-      };
+      // 如果需要过滤版本
+      if (since > 0) {
+        const filteredItems = result.items.filter(item => {
+          const viewItem = this.syncView.get(storeName, item.id);
+          return viewItem && viewItem.version > since;
+        });
+        return {
+          items: filteredItems,
+          hasMore: result.hasMore
+        };
+      }
+      return result;
     } catch (error) {
-      console.error(`查询数据失败 ${storeName}:`, error);
+      console.error(`Query failed for store ${storeName}:`, error);
       throw error;
     }
   }

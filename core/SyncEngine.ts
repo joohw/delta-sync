@@ -39,7 +39,7 @@ export class SyncEngine implements ISyncEngine {
         return {
             autoSync: {
                 enabled: false,
-                interval: 5000,
+                interval: 30000,
                 retryDelay: 1000,
                 ...options.autoSync
             },
@@ -101,6 +101,7 @@ export class SyncEngine implements ISyncEngine {
     // 同步操作方法
     async sync(force: boolean = false): Promise<SyncResult> {
         if (!this.cloudCoordinator) {
+            this.updateStatus(SyncStatus.OFFLINE);
             return {
                 success: false,
                 error: 'Cloud adapter not set',
@@ -110,6 +111,7 @@ export class SyncEngine implements ISyncEngine {
         try {
             const pullResult = await this.pull(force);
             const pushResult = await this.push(force);
+            this.updateStatus(SyncStatus.IDLE);
             return {
                 success: pullResult.success && pushResult.success,
                 error: pullResult.success ? pushResult.error : pullResult.error,
@@ -121,6 +123,7 @@ export class SyncEngine implements ISyncEngine {
                 }
             };
         } catch (error) {
+            this.updateStatus(SyncStatus.ERROR);
             console.error('Sync failed:', error);
             return {
                 success: false,
@@ -142,7 +145,6 @@ export class SyncEngine implements ISyncEngine {
         }
 
         try {
-            this.updateStatus(SyncStatus.UPLOADING);
             // 获取本地和云端视图
             if (force) {
                 await this.cloudCoordinator.refreshView();
@@ -159,6 +161,7 @@ export class SyncEngine implements ISyncEngine {
                     stats: { uploaded: 0, downloaded: 0, errors: 0 }
                 };
             }
+            this.updateStatus(SyncStatus.UPLOADING);
             const changeSet = await this.localCoordinator.extractChanges(toUpload);
             let uploadedCount = 0;
             for (const itemChanges of changeSet.put.values()) {
@@ -168,6 +171,7 @@ export class SyncEngine implements ISyncEngine {
                 uploadedCount += itemChanges.length;
             }
             await this.cloudCoordinator.applyChanges(changeSet);
+            this.options.onChangePushed?.(changeSet);
             this.updateStatus(SyncStatus.IDLE);
             return {
                 success: true,
@@ -201,7 +205,6 @@ export class SyncEngine implements ISyncEngine {
             };
         }
         try {
-            this.updateStatus(SyncStatus.DOWNLOADING);
             if (force) {
                 await this.cloudCoordinator.refreshView();
                 await this.localCoordinator.refreshView();
@@ -217,6 +220,7 @@ export class SyncEngine implements ISyncEngine {
                     stats: { uploaded: 0, downloaded: 0, errors: 0 }
                 };
             }
+            this.updateStatus(SyncStatus.DOWNLOADING);
             const changeSet = await this.cloudCoordinator.extractChanges(toDownload);
             let downloadedCount = 0;
             for (const itemChanges of changeSet.put.values()) {
@@ -227,6 +231,7 @@ export class SyncEngine implements ISyncEngine {
             }
             // 应用到本地
             await this.localCoordinator.applyChanges(changeSet);
+            this.options.onChangePulled?.(changeSet);
             this.updateStatus(SyncStatus.IDLE);
             return {
                 success: true,
@@ -275,8 +280,10 @@ export class SyncEngine implements ISyncEngine {
             enabled: true,
             interval: interval || this.options.autoSync?.interval || 5000
         };
+        console.log('[SyncEngine] Enabling auto sync with interval:', this.options.autoSync.interval);
+        // 使用新的执行方法
         this.periodicSyncTimer = setInterval(() => {
-            this.sync();
+            this.executeSyncTask();
         }, this.options.autoSync.interval);
     }
 
@@ -297,27 +304,42 @@ export class SyncEngine implements ISyncEngine {
         };
     }
 
+
+    // 实际执行同步任务的函数
+    private async executeSyncTask(): Promise<void> {
+        if (this.syncStatus !== SyncStatus.IDLE) {
+            return;
+        }
+        try {
+            await this.sync(true);
+        } catch (error) {
+            console.error('[SyncEngine] Sync task failed:', error);
+        }
+    }
+
+
     // 数据变更时触发定期的变更任务
     private handleDataChange(): void {
         if (!this.options.autoSync?.enabled) return;
+
         if (this.changeDebounceTimer) {
             clearTimeout(this.changeDebounceTimer);
         }
-        this.changeDebounceTimer = setTimeout(async () => {
-            const result = await this.sync();
-            if (!result.success) {
-                console.error('Auto sync failed:', result.error);
-            }
+        console.log('[SyncEngine] Data change detected, scheduling sync task');
+        this.changeDebounceTimer = setTimeout(() => {
+            this.executeSyncTask();
         }, 10000);
     }
 
 
     // 配置更新
-    updateSyncOptions(options: Partial<SyncOptions>): void {
+    updateSyncOptions(options: Partial<SyncOptions>): SyncOptions {
+        // 更新选项
         this.options = this.mergeDefaultOptions({
             ...this.options,
             ...options
         });
+        // 处理自动同步设置
         if (options.autoSync) {
             if (options.autoSync.enabled) {
                 this.enableAutoSync(options.autoSync.interval);
@@ -325,7 +347,9 @@ export class SyncEngine implements ISyncEngine {
                 this.disableAutoSync();
             }
         }
+        return this.options;
     }
+
 
     // 实例获取
     async getlocalCoordinator(): Promise<Coordinator> {
@@ -354,6 +378,7 @@ export class SyncEngine implements ISyncEngine {
     // 断开连接
     disconnectCloud(): void {
         this.cloudCoordinator = undefined;
+        this.updateStatus(SyncStatus.OFFLINE);
     }
 
 
@@ -361,20 +386,14 @@ export class SyncEngine implements ISyncEngine {
     private updateStatus(status: SyncStatus): void {
         if (this.syncStatus === status) return;
         this.syncStatus = status;
-        this.options.onStatusUpdate?.(status);
-        if (process.env.NODE_ENV === 'development') {
-            // console.log('Sync status changed to:', SyncStatus[status]);
+        // 确保回调被调用
+        if (this.options.onStatusUpdate) {
+            try {
+                this.options.onStatusUpdate(status);
+            } catch (error) {
+                console.error('Status update callback error:', error);
+            }
         }
     }
-
-
-    private splitIntoBatches<T>(items: T[], batchSize: number): T[][] {
-        const batches: T[][] = [];
-        for (let i = 0; i < items.length; i += batchSize) {
-            batches.push(items.slice(i, i + batchSize));
-        }
-        return batches;
-    }
-
 
 }

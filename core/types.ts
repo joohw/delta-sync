@@ -3,7 +3,6 @@
 export type SyncOperationType = 'put' | 'delete';
 
 
-
 export interface SyncQueryOptions {
     since?: number;      // 查询某个version之后的数据
     limit?: number;      // 限制返回数量
@@ -55,8 +54,8 @@ export interface SyncOptions<T extends { id: string } = any> {
     };
     onStatusUpdate?: (status: SyncStatus) => void;
     onVersionUpdate?: (version: number) => void;
-    onChangePushed?: (items: T[]) => void;    // 改为数组形式
-    onChangePulled?: (items: T[]) => void;    // 改为数组形式
+    onChangePushed?: (changes: DataChangeSet) => void;
+    onChangePulled?: (changes: DataChangeSet) => void;
     maxRetries?: number;    // 最大重试次数
     timeout?: number;       // 超时时间(毫秒)
     batchSize?: number;     // 同步批次的数量
@@ -75,7 +74,6 @@ export interface SyncViewItem {
 }
 
 
-
 export interface DataChange<T = any> {
     id: string;
     data?: T;
@@ -87,7 +85,6 @@ export interface DataChangeSet {
     delete: Map<string, DataChange[]>; // store -> changes
     put: Map<string, DataChange[]>;    // store -> changes
 }
-
 
 
 export class SyncView {
@@ -116,7 +113,6 @@ export class SyncView {
     get(store: string, id: string): SyncViewItem | undefined {
         return this.items.get(this.getKey(store, id));
     }
-
     // 分页获取指定 store 的所有记录
     getByStore(store: string, offset: number = 0, limit: number = 100): SyncViewItem[] {
         const storeItems = this.storeIndex.get(store);
@@ -130,9 +126,6 @@ export class SyncView {
     getStores(): string[] {
         return Array.from(this.storeIndex.keys())
     }
-
-
-
     // 比较两个视图的差异
     static diffViews(local: SyncView, remote: SyncView): {
         toDownload: SyncViewItem[];
@@ -168,10 +161,6 @@ export class SyncView {
         }
         return { toDownload, toUpload };
     }
-
-
-
-
 
 
     // 生成复合键
@@ -275,7 +264,7 @@ export interface ISyncEngine {
     // 自动同步控制
     enableAutoSync(interval?: number): void;
     disableAutoSync(): void;
-    updateSyncOptions(options: Partial<SyncOptions>): void;
+    updateSyncOptions(options: Partial<SyncOptions>): SyncOptions;
     // 云端适配器设置
     setCloudAdapter(cloudAdapter: DatabaseAdapter): Promise<void>;
     save<T extends { id: string }>(

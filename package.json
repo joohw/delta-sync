@@ -4,6 +4,14 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rimraf dist",
+    "prepublish": "npm run clean && npm run build",
+    "test": "vitest",
+    "test:ui": "vitest --ui"
+  },
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -27,13 +35,6 @@
     "LICENSE",
     "README.md"
   ],
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "clean": "rimraf dist",
-    "prepublish": "npm run clean && npm run build",
-    "test": "tsx test/index.ts"
-  },
   "keywords": [
     "database",
     "sync",
@@ -63,10 +64,14 @@
   "devDependencies": {
     "@types/crypto-js": "^4.2.2",
     "@types/node": "^22.13.10",
+    "@vitest/coverage-c8": "^0.33.0",
+    "@vitest/coverage-v8": "^3.1.1",
+    "@vitest/ui": "^3.1.1",
     "http-server": "^14.1.1",
     "rimraf": "^5.0.5",
     "tsx": "^4.19.3",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^3.1.1"
   },
   "dependencies": {
     "crypto-js": "^4.2.0",
