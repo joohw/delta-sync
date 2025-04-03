@@ -99,7 +99,7 @@ export class SyncEngine implements ISyncEngine {
 
 
     // 同步操作方法
-    async sync(force: boolean = false): Promise<SyncResult> {
+    async sync(): Promise<SyncResult> {
         if (!this.cloudCoordinator) {
             this.updateStatus(SyncStatus.OFFLINE);
             return {
@@ -109,8 +109,8 @@ export class SyncEngine implements ISyncEngine {
             };
         }
         try {
-            const pullResult = await this.pull(force);
-            const pushResult = await this.push(force);
+            const pullResult = await this.pull();
+            const pushResult = await this.push();
             this.updateStatus(SyncStatus.IDLE);
             return {
                 success: pullResult.success && pushResult.success,
@@ -143,13 +143,8 @@ export class SyncEngine implements ISyncEngine {
                 stats: { uploaded: 0, downloaded: 0, errors: 1 }
             };
         }
-
         try {
-            // 获取本地和云端视图
-            if (force) {
-                await this.cloudCoordinator.refreshView();
-                await this.localCoordinator.refreshView();
-            }
+            await this.cloudCoordinator.refreshView();
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
             const { toUpload } = SyncView.diffViews(localView, cloudView);
@@ -182,7 +177,6 @@ export class SyncEngine implements ISyncEngine {
                     errors: 0
                 }
             };
-
         } catch (error) {
             this.updateStatus(SyncStatus.ERROR);
             return {
@@ -311,7 +305,7 @@ export class SyncEngine implements ISyncEngine {
             return;
         }
         try {
-            await this.sync(true);
+            await this.sync();
         } catch (error) {
             console.error('[SyncEngine] Sync task failed:', error);
         }

@@ -110,7 +110,7 @@ export class Coordinator implements ICoordinator {
     storeName: string,
     items: T[],
     silent: boolean = false,
-    version?: number  // 添加可选的版本号参数
+    _ver?: number  // 添加可选的版本号参数
   ): Promise<T[]> {
     await this.ensureInitialized();
     try {
@@ -119,7 +119,7 @@ export class Coordinator implements ICoordinator {
         this.syncView.upsert({
           id: item.id,
           store: storeName,
-          version: version || Date.now(),
+          _ver: _ver || Date.now(),
         });
       }
       if (!silent) {
@@ -152,7 +152,7 @@ export class Coordinator implements ICoordinator {
       if (deletedItems.length > 0) {
         deleteMap.set(store, deletedItems.map(item => ({
           id: item.id,
-          version: item.version
+          _ver: item._ver
         })));
       }
       if (updateItems.length > 0) {
@@ -163,7 +163,7 @@ export class Coordinator implements ICoordinator {
         putMap.set(store, data.map(item => ({
           id: item.id,
           data: item,
-          version: updateItems.find(i => i.id === item.id)?.version || Date.now()
+          _ver: updateItems.find(i => i.id === item.id)?._ver || Date.now()
         })));
       }
     }
@@ -180,7 +180,7 @@ export class Coordinator implements ICoordinator {
   ): Promise<void> {
     for (const [store, changes] of changeSet.delete) {
       for (const change of changes) {
-        await this.deleteBulk(store, [change.id], change.version);
+        await this.deleteBulk(store, [change.id], change._ver);
       }
     }
     for (const [store, changes] of changeSet.put) {
@@ -188,7 +188,7 @@ export class Coordinator implements ICoordinator {
         store,
         changes.map(c => c.data as T),
         true, // 静默模式
-        changes[0]?.version // 使用原始版本号
+        changes[0]?._ver // 使用原始版本号
       );
     }
   }
@@ -198,17 +198,17 @@ export class Coordinator implements ICoordinator {
   async deleteBulk(
     storeName: string,
     ids: string[],
-    version?: number
+    _ver?: number
   ): Promise<void> {
     await this.ensureInitialized();
     try {
       await this.adapter.deleteBulk(storeName, ids);
-      const currentVersion = version || Date.now();
+      const currentVersion = _ver || Date.now();
       for (const id of ids) {
         this.syncView.upsert({
           id,
           store: storeName,
-          version: currentVersion,
+          _ver: currentVersion,
           deleted: true
         });
       }
@@ -250,7 +250,7 @@ export class Coordinator implements ICoordinator {
               this.syncView.upsert({
                 id: item.id,
                 store: store,
-                version: Date.now(),
+                _ver: Date.now(),
               });
             }
           }
@@ -298,7 +298,7 @@ export class Coordinator implements ICoordinator {
       if (since > 0) {
         const filteredItems = result.items.filter(item => {
           const viewItem = this.syncView.get(storeName, item.id);
-          return viewItem && viewItem.version > since;
+          return viewItem && viewItem._ver > since;
         });
         return {
           items: filteredItems,

@@ -4,7 +4,7 @@ export type SyncOperationType = 'put' | 'delete';
 
 
 export interface SyncQueryOptions {
-    since?: number;      // 查询某个version之后的数据
+    since?: number;      // 查询某个_ver之后的数据
     limit?: number;      // 限制返回数量
     offset?: number;     // 起始位置
 }
@@ -53,7 +53,7 @@ export interface SyncOptions<T extends { id: string } = any> {
         retryDelay?: number;
     };
     onStatusUpdate?: (status: SyncStatus) => void;
-    onVersionUpdate?: (version: number) => void;
+    onVersionUpdate?: (_ver: number) => void;
     onChangePushed?: (changes: DataChangeSet) => void;
     onChangePulled?: (changes: DataChangeSet) => void;
     maxRetries?: number;    // 最大重试次数
@@ -68,7 +68,7 @@ export interface SyncOptions<T extends { id: string } = any> {
 export interface SyncViewItem {
     id: string;
     store: string;
-    version: number;
+    _ver: number;
     deleted?: boolean;      // 标记是否被删除
     isAttachment?: boolean; // 标记是否为附件
 }
@@ -77,7 +77,7 @@ export interface SyncViewItem {
 export interface DataChange<T = any> {
     id: string;
     data?: T;
-    version: number;
+    _ver: number;
 }
 
 
@@ -152,9 +152,9 @@ export class SyncView {
             if (remoteKeys.has(key)) {
                 const localItem = local.items.get(key)!;
                 const remoteItem = remote.items.get(key)!;
-                if (localItem.version > remoteItem.version) {
+                if (localItem._ver > remoteItem._ver) {
                     toUpload.push(localItem);
-                } else if (localItem.version < remoteItem.version) {
+                } else if (localItem._ver < remoteItem._ver) {
                     toDownload.push(remoteItem);
                 }
             }
