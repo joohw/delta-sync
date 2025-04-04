@@ -1,7 +1,7 @@
 // tests/adapter.test.ts
 import { describe, it, expect, beforeEach } from 'vitest'
 import { DatabaseAdapter } from '../core/types'
-import { MemoryAdapter } from '../core/adapters' // 假设有这个适配器用于测试
+import { MemoryAdapter } from '../core/adapters'
 
 describe('DatabaseAdapter Tests', () => {
     let adapter: DatabaseAdapter
