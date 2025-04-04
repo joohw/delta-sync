@@ -17,12 +17,11 @@ interface SerializedSyncView {
 }
 
 export class Coordinator implements ICoordinator {
-  private syncView: SyncView;
-  private adapter: DatabaseAdapter;
+  syncView: SyncView;
+  adapter: DatabaseAdapter;
   private readonly SYNC_VIEW_STORE = 'syncView';
   private readonly SYNC_VIEW_KEY = 'current_view';
   private initialized: boolean = false;
-  private dataChangeCallback?: () => void;
 
 
   constructor(adapter: DatabaseAdapter) {
@@ -48,16 +47,6 @@ export class Coordinator implements ICoordinator {
       console.error('初始化同步视图失败:', error);
       throw error;
     }
-  }
-
-
-  onDataChanged(callback: () => void): void {
-    this.dataChangeCallback = callback;
-  }
-
-
-  private notifyDataChanged(): void {
-    this.dataChangeCallback?.();
   }
 
 
@@ -106,24 +95,25 @@ export class Coordinator implements ICoordinator {
   }
 
 
+  // 通过协调器写入的数据会被追加到syncView用于同步比对
   async putBulk<T extends { id: string }>(
     storeName: string,
     items: T[],
-    silent: boolean = false,
-    _ver?: number
   ): Promise<T[]> {
     await this.ensureInitialized();
     try {
-      const results = await this.adapter.putBulk(storeName, items);
+      const newVersion = Date.now();
+      const itemsWithVersion = items.map(item => ({
+        ...item,
+        _ver: newVersion
+      }));
+      const results = await this.adapter.putBulk(storeName, itemsWithVersion);
       for (const item of results) {
         this.syncView.upsert({
           id: item.id,
           store: storeName,
-          _ver: _ver || Date.now(),
+          _ver: newVersion,
         });
-      }
-      if (!silent) {
-        this.notifyDataChanged();
       }
       await this.persistView();
       return results;
@@ -132,6 +122,8 @@ export class Coordinator implements ICoordinator {
       throw error;
     }
   }
+
+
 
 
   async extractChanges<T extends { id: string }>(
@@ -178,20 +170,39 @@ export class Coordinator implements ICoordinator {
   async applyChanges<T extends { id: string }>(
     changeSet: DataChangeSet
   ): Promise<void> {
-    for (const [store, changes] of changeSet.delete) {
-      for (const change of changes) {
-        await this.deleteBulk(store, [change.id], change._ver);
+    await this.ensureInitialized();
+    try {
+      for (const [store, changes] of changeSet.delete) {
+        await this.adapter.deleteBulk(store, changes.map(c => c.id));
+        changes.forEach(change => {
+          this.syncView.upsert({
+            id: change.id,
+            store,
+            _ver: change._ver,
+            deleted: true
+          });
+        });
       }
-    }
-    for (const [store, changes] of changeSet.put) {
-      await this.putBulk(
-        store,
-        changes.map(c => c.data as T),
-        true, // 静默模式
-        changes[0]?._ver // 使用原始版本号
-      );
+      // 直接应用更新操作
+      for (const [store, changes] of changeSet.put) {
+        console.log('changes:', changes.map(c => c.data as T));
+        await this.adapter.putBulk(store, changes.map(c => c.data as T));
+        changes.forEach(change => {
+          this.syncView.upsert({
+            id: change.id,
+            store,
+            _ver: change._ver
+          });
+        });
+      }
+      await this.persistView();
+    } catch (error) {
+      console.error('应用更改失败:', error);
+      throw error;
     }
   }
+
+
 
 
 
@@ -212,7 +223,6 @@ export class Coordinator implements ICoordinator {
           deleted: true
         });
       }
-      this.notifyDataChanged();
       await this.persistView();
     } catch (error) {
       console.error('删除数据失败:', error);
@@ -230,12 +240,11 @@ export class Coordinator implements ICoordinator {
 
 
   private async rebuildSyncView(): Promise<void> {
+    console.log('重建同步视图...');
     try {
       this.syncView.clear();
       const stores = await this.adapter.getStores();
-      const allStores = [
-        ...stores,
-      ];
+      const allStores = stores.filter(store => store !== this.SYNC_VIEW_STORE);
       for (const store of allStores) {
         let offset = 0;
         const limit = 100;

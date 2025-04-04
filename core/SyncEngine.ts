@@ -31,7 +31,6 @@ export class SyncEngine implements ISyncEngine {
     ) {
         this.localCoordinator = new Coordinator(localAdapter);
         this.options = this.mergeDefaultOptions(options);
-        this.localCoordinator.onDataChanged(() => this.handleDataChange());
     }
 
 
@@ -88,16 +87,28 @@ export class SyncEngine implements ISyncEngine {
         data: T | T[]
     ): Promise<T[]> {
         await this.ensureInitialized();
-        const items = Array.isArray(data) ? data : [data];
-        const savedItems = await this.localCoordinator.putBulk(storeName, items, false);
-        return savedItems;
+        try {
+            const items = Array.isArray(data) ? data : [data];
+            const savedItems = await this.localCoordinator.putBulk(storeName, items);
+            this.handleDataChange();
+            return savedItems;
+        } catch (error) {
+            console.error('Save operation failed:', error);
+            throw error;
+        }
     }
 
 
     async delete(storeName: string, ids: string | string[]): Promise<void> {
         await this.ensureInitialized();
-        const idsToDelete = Array.isArray(ids) ? ids : [ids];
-        await this.localCoordinator.deleteBulk(storeName, idsToDelete);
+        try {
+            const idsToDelete = Array.isArray(ids) ? ids : [ids];
+            await this.localCoordinator.deleteBulk(storeName, idsToDelete);
+            this.handleDataChange();
+        } catch (error) {
+            console.error('Delete operation failed:', error);
+            throw error;
+        }
     }
 
 
@@ -116,7 +127,7 @@ export class SyncEngine implements ISyncEngine {
             const pullResult = await this.pull();
             const pushResult = await this.push();
             this.updateStatus(SyncStatus.IDLE);
-            console.log('[SyncEngine] Sync completed:', pullResult, pushResult);
+            console.log('[SyncEngine] Sync completed');
             return {
                 success: pullResult.success && pushResult.success,
                 error: pullResult.success ? pushResult.error : pullResult.error,
@@ -139,6 +150,74 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
+    async pull(): Promise<SyncResult> {
+        console.log('[SyncEngine] Pulling...');
+        if (!this.cloudCoordinator) {
+            console.log('[SyncEngine] Pull skipped, cloud adapter not set');
+            this.updateStatus(SyncStatus.OFFLINE);
+            return {
+                success: false,
+                error: 'Cloud adapter not set',
+                stats: { uploaded: 0, downloaded: 0, errors: 1 }
+            };
+        }
+        try {
+            this.updateStatus(SyncStatus.DOWNLOADING);
+            await this.cloudCoordinator.refreshView();
+            const localView = await this.localCoordinator.getCurrentView();
+            const cloudView = await this.cloudCoordinator.getCurrentView();
+            console.log('[SyncEngine] Comparing views for pull');
+            const { toDownload } = SyncView.diffViews(localView, cloudView);
+            if (toDownload.length === 0) {
+                this.updateStatus(SyncStatus.IDLE);
+                return {
+                    success: true,
+                    syncedAt: Date.now(),
+                    stats: { uploaded: 0, downloaded: 0, errors: 0 }
+                };
+            }
+            console.log('[SyncEngine] Extracting changes for pull:', toDownload.length, 'items');
+            const changeSet = await this.cloudCoordinator.extractChanges(toDownload);
+            let downloadedCount = 0;
+            for (const itemChanges of changeSet.put.values()) {
+                downloadedCount += itemChanges.length;
+            }
+            for (const itemChanges of changeSet.delete.values()) {
+                downloadedCount += itemChanges.length;
+            }
+            // 更新版本号
+            const latestVersion = Math.max(...toDownload.map(item => item._ver));
+            if (latestVersion && this.options.onVersionUpdate) {
+                this.options.onVersionUpdate(latestVersion);
+            }
+            // 应用更改到本地
+            console.log('[SyncEngine] Applying changes to local storage');
+            await this.localCoordinator.applyChanges(changeSet);
+            // 触发拉取回调
+            this.options.onChangePulled?.(changeSet);
+            this.updateStatus(SyncStatus.IDLE);
+            console.log('[SyncEngine] Pull completed successfully');
+            return {
+                success: true,
+                syncedAt: Date.now(),
+                stats: {
+                    uploaded: 0,
+                    downloaded: downloadedCount,
+                    errors: 0
+                }
+            };
+        } catch (error) {
+            this.updateStatus(SyncStatus.ERROR);
+            console.error('[SyncEngine] Pull failed:', error);
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : 'Pull failed',
+                stats: { uploaded: 0, downloaded: 0, errors: 1 }
+            };
+        }
+    }
+    
+
     async push(): Promise<SyncResult> {
         console.log('[SyncEngine] Pushing...');
         if (!this.cloudCoordinator) {
@@ -155,6 +234,8 @@ export class SyncEngine implements ISyncEngine {
             await this.cloudCoordinator.refreshView();
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
+            console.log('[SyncEngine] Comparing views for push');
+            
             const { toUpload } = SyncView.diffViews(localView, cloudView);
             if (toUpload.length === 0) {
                 this.updateStatus(SyncStatus.IDLE);
@@ -164,7 +245,10 @@ export class SyncEngine implements ISyncEngine {
                     stats: { uploaded: 0, downloaded: 0, errors: 0 }
                 };
             }
+    
+            console.log('[SyncEngine] Extracting changes for push:', toUpload.length, 'items');
             const changeSet = await this.localCoordinator.extractChanges(toUpload);
+            
             let uploadedCount = 0;
             for (const itemChanges of changeSet.put.values()) {
                 uploadedCount += itemChanges.length;
@@ -172,9 +256,23 @@ export class SyncEngine implements ISyncEngine {
             for (const itemChanges of changeSet.delete.values()) {
                 uploadedCount += itemChanges.length;
             }
+    
+            // 执行云端更新
+            console.log('[SyncEngine] Applying changes to cloud');
             await this.cloudCoordinator.applyChanges(changeSet);
+    
+            // 更新版本号
+            const latestVersion = Math.max(...toUpload.map(item => item._ver));
+            if (latestVersion && this.options.onVersionUpdate) {
+                this.options.onVersionUpdate(latestVersion);
+            }
+    
+            // 触发推送回调
             this.options.onChangePushed?.(changeSet);
+            
             this.updateStatus(SyncStatus.IDLE);
+            console.log('[SyncEngine] Push completed successfully');
+            
             return {
                 success: true,
                 syncedAt: Date.now(),
@@ -186,6 +284,7 @@ export class SyncEngine implements ISyncEngine {
             };
         } catch (error) {
             this.updateStatus(SyncStatus.ERROR);
+            console.error('[SyncEngine] Push failed:', error);
             return {
                 success: false,
                 error: error instanceof Error ? error.message : 'Push failed',
@@ -193,64 +292,7 @@ export class SyncEngine implements ISyncEngine {
             };
         }
     }
-
-
-
-    async pull(): Promise<SyncResult> {
-        console.log('[SyncEngine] Pulling...');
-        if (!this.cloudCoordinator) {
-            console.log('[SyncEngine] Push skipped, cloud adapter not set');
-            this.updateStatus(SyncStatus.OFFLINE);
-            return {
-                success: false,
-                error: 'Cloud adapter not set',
-                stats: { uploaded: 0, downloaded: 0, errors: 1 }
-            };
-        }
-        try {
-            this.updateStatus(SyncStatus.DOWNLOADING);
-            await this.cloudCoordinator.refreshView();
-            const localView = await this.localCoordinator.getCurrentView();
-            const cloudView = await this.cloudCoordinator.getCurrentView();
-            const { toDownload } = SyncView.diffViews(localView, cloudView);
-            if (toDownload.length === 0) {
-                this.updateStatus(SyncStatus.IDLE);
-                return {
-                    success: true,
-                    syncedAt: Date.now(),
-                    stats: { uploaded: 0, downloaded: 0, errors: 0 }
-                };
-            }
-            const changeSet = await this.cloudCoordinator.extractChanges(toDownload);
-            let downloadedCount = 0;
-            for (const itemChanges of changeSet.put.values()) {
-                downloadedCount += itemChanges.length;
-            }
-            for (const itemChanges of changeSet.delete.values()) {
-                downloadedCount += itemChanges.length;
-            }
-            // 应用到本地
-            await this.localCoordinator.applyChanges(changeSet);
-            this.options.onChangePulled?.(changeSet);
-            this.updateStatus(SyncStatus.IDLE);
-            return {
-                success: true,
-                syncedAt: Date.now(),
-                stats: {
-                    uploaded: 0,
-                    downloaded: downloadedCount,
-                    errors: 0
-                }
-            };
-        } catch (error) {
-            this.updateStatus(SyncStatus.ERROR);
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Pull failed',
-                stats: { uploaded: 0, downloaded: 0, errors: 1 }
-            };
-        }
-    }
+    
 
 
 
@@ -279,7 +321,7 @@ export class SyncEngine implements ISyncEngine {
         this.options.autoSync = {
             ...currentAutoSync,
             enabled: true,
-            pullInterval: pullInterval || currentAutoSync.pullInterval || 30000
+            pullInterval: pullInterval || currentAutoSync.pullInterval || 30000000
         };
         console.log('[SyncEngine] Enabling auto sync with pull interval:',
             this.options.autoSync.pullInterval);
@@ -321,20 +363,43 @@ export class SyncEngine implements ISyncEngine {
 
     // 本地数据变更触发推送
     private handleDataChange(): void {
-        if (!this.options.autoSync?.enabled) return;
-
+        console.log('[SyncEngine] Data change detected at:', new Date().toISOString());
+        if (!this.options.autoSync?.enabled) {
+            console.log('[SyncEngine] Auto sync disabled, skipping push');
+            return;
+        }
+        if (!this.cloudCoordinator) {
+            console.log('[SyncEngine] No cloud coordinator, skipping push');
+            return;
+        }
         if (this.pushDebounceTimer) {
             clearTimeout(this.pushDebounceTimer);
         }
-        console.log('[SyncEngine] Data change detected, scheduling push task');
+        console.log('[SyncEngine] Scheduling push task');
         this.pushDebounceTimer = setTimeout(async () => {
-            if (this.syncStatus !== SyncStatus.IDLE) return;
             try {
-                await this.push();
+                if (this.canTriggerSync()) {
+                    console.log('[SyncEngine] Executing scheduled push');
+                    await this.push();
+                } else {
+                    console.log('[SyncEngine] Push skipped due to conditions not met');
+                }
             } catch (error) {
-                console.error('[SyncEngine] Push task failed:', error);
+                console.error('[SyncEngine] Scheduled push failed:', error);
             }
-        }, this.options.autoSync.pushDebounce);
+        }, this.options.autoSync?.pushDebounce || 10000);
+    }
+
+
+    // 添加同步条件检查方法
+    private canTriggerSync(): boolean {
+        const isAutoSyncEnabled = this.options.autoSync?.enabled === true;
+        const canSync = Boolean(
+            isAutoSyncEnabled &&
+            this.cloudCoordinator !== undefined &&
+            ![SyncStatus.ERROR, SyncStatus.UPLOADING, SyncStatus.DOWNLOADING].includes(this.syncStatus)
+        );
+        return canSync;
     }
 
 
@@ -396,20 +461,76 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
+    async clearLocalStores(stores: string | string[]): Promise<void> {
+        try {
+            this.updateStatus(SyncStatus.OPERATING);
+            const localAdapter = await this.localCoordinator.getAdapter();
+            const availableStores = await localAdapter.getStores();
+            const storesToClear = Array.isArray(stores) ? stores : [stores];
+            const invalidStores = storesToClear.filter(store => !availableStores.includes(store));
+            if (invalidStores.length > 0) {
+                throw new Error(`Invalid stores: ${invalidStores.join(', ')}`);
+            }
+            const clearPromises = storesToClear.map(async (store) => {
+                try {
+                    const result = await localAdapter.clearStore(store);
+                    if (!result) {
+                        console.warn(`Failed to clear store: ${store}`);
+                    }
+                    return { store, success: result };
+                } catch (error) {
+                    console.error(`Error clearing store ${store}:`, error);
+                    return { store, success: false };
+                }
+            });
+            const results = await Promise.all(clearPromises);
+            const failures = results.filter(r => !r.success);
+            if (failures.length > 0) {
+                throw new Error(`Failed to clear stores: ${failures.map(f => f.store).join(', ')}`);
+            }
+            await this.localCoordinator.initSync();
+            this.updateStatus(SyncStatus.IDLE);
+        } catch (error) {
+            this.updateStatus(SyncStatus.ERROR);
+            throw error;
+        }
+    }
+
+
+    async countCloudStoreItems(storeName: string): Promise<number> {
+        if (!this.cloudCoordinator) {
+            throw new Error('Cloud adapter not set');
+        }
+        try {
+            await this.cloudCoordinator.refreshView();
+            const cloudView = await this.cloudCoordinator.getCurrentView();
+            let count = 0;
+            const storeItems = cloudView.getByStore(storeName);
+            for (const item of storeItems) {
+                if (!item.deleted) {
+                    count++;
+                }
+            }
+            return count;
+        } catch (error) {
+            throw new Error(`Failed to count items in cloud store ${storeName}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+
+
 
     // 实例获取
-    async getlocalCoordinator(): Promise<Coordinator> {
+    getlocalCoordinator(): Coordinator {
         return this.localCoordinator;
     }
 
     // 获取本地数据库适配器
-    async getlocalAdapter(): Promise<DatabaseAdapter> {
-        return await this.localCoordinator.getAdapter();
+    getlocalAdapter(): DatabaseAdapter {
+        return this.localCoordinator.adapter;
     }
 
-    async getCloudAdapter(): Promise<DatabaseAdapter | undefined> {
-        if (!this.cloudCoordinator) return undefined;
-        return await this.cloudCoordinator.getAdapter();
+    getCloudAdapter(): DatabaseAdapter | undefined {
+        return this.cloudCoordinator?.adapter;
     }
 
 
@@ -417,7 +538,6 @@ export class SyncEngine implements ISyncEngine {
     dispose(): void {
         this.disableAutoSync();
         this.syncStatus = SyncStatus.OFFLINE;
-        this.localCoordinator.onDataChanged(() => { });
         this.disconnectCloud();
         this.isInitialized = false;
     }

@@ -77,7 +77,7 @@ export interface SyncViewItem {
 
 export interface DataChange<T = any> {
     id: string;
-    data?: T;
+    data?: T;   //变更后的数据，可能为空
     _ver: number;
 }
 
@@ -245,13 +245,11 @@ export interface ICoordinator {
     putBulk<T extends { id: string }>(
         storeName: string,
         items: T[],
-        silent?: boolean
     ): Promise<T[]>;
     deleteBulk(
         storeName: string,
         ids: string[]
     ): Promise<void>;
-    onDataChanged(callback: () => void): void;
     extractChanges(items: SyncViewItem[]): Promise<DataChangeSet>;
     applyChanges(changeSet: DataChangeSet): Promise<void>;
 }
@@ -281,9 +279,10 @@ export interface ISyncEngine {
         options?: SyncQueryOptions
     ): Promise<SyncQueryResult<T>>;
     clearCloudStores(strings: string | string[]): Promise<void>;
-    getlocalCoordinator(): Promise<ICoordinator>;
-    getlocalAdapter(): Promise<DatabaseAdapter>;
-    getCloudAdapter(): Promise<DatabaseAdapter | undefined>;
+    clearLocalStores(strings: string | string[]): Promise<void>;
+    getlocalCoordinator(): ICoordinator;
+    getlocalAdapter(): DatabaseAdapter;
+    getCloudAdapter(): DatabaseAdapter | undefined;
     dispose(): void;
     disconnectCloud(): void;
 }

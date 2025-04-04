@@ -84,23 +84,6 @@ describe('Coordinator Tests', () => {
         })
     })
 
-    describe('Change Notification', () => {
-        it('should notify on data changes', async () => {
-            let notified = false
-            coordinator.onDataChanged(() => {
-                notified = true
-            })
-
-            await coordinator.putBulk('test_store', [{
-                id: 'change-test',
-                content: 'change test'
-            }])
-
-            // Wait for notification
-            await new Promise(resolve => setTimeout(resolve, 100))
-            expect(notified).toBe(true)
-        })
-    })
 
     describe('Concurrency', () => {
         it('should handle concurrent operations', async () => {
