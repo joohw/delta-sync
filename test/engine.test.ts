@@ -16,7 +16,8 @@ describe('SyncEngine Tests', () => {
         options = {
             autoSync: {
                 enabled: false,
-                interval: 1000,
+                pullInterval: 1000,
+                pushDebounce: 1000,
                 retryDelay: 500
             },
             onStatusUpdate: vi.fn(),

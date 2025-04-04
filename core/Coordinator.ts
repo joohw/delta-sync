@@ -19,7 +19,7 @@ interface SerializedSyncView {
 export class Coordinator implements ICoordinator {
   private syncView: SyncView;
   private adapter: DatabaseAdapter;
-  private readonly SYNC_VIEW_STORE = 'local_sync_view';
+  private readonly SYNC_VIEW_STORE = 'syncView';
   private readonly SYNC_VIEW_KEY = 'current_view';
   private initialized: boolean = false;
   private dataChangeCallback?: () => void;
@@ -110,7 +110,7 @@ export class Coordinator implements ICoordinator {
     storeName: string,
     items: T[],
     silent: boolean = false,
-    _ver?: number  // 添加可选的版本号参数
+    _ver?: number
   ): Promise<T[]> {
     await this.ensureInitialized();
     try {

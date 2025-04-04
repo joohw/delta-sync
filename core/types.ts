@@ -49,7 +49,8 @@ export enum SyncStatus {
 export interface SyncOptions<T extends { id: string } = any> {
     autoSync?: {
         enabled?: boolean;
-        interval?: number;
+        pullInterval?: number;
+        pushDebounce?: number;
         retryDelay?: number;
     };
     onStatusUpdate?: (status: SyncStatus) => void;
@@ -279,10 +280,10 @@ export interface ISyncEngine {
         storeName: string,
         options?: SyncQueryOptions
     ): Promise<SyncQueryResult<T>>;
+    clearCloudStores(strings: string | string[]): Promise<void>;
     getlocalCoordinator(): Promise<ICoordinator>;
     getlocalAdapter(): Promise<DatabaseAdapter>;
     getCloudAdapter(): Promise<DatabaseAdapter | undefined>;
-    // 清理和断开连接
     dispose(): void;
     disconnectCloud(): void;
 }

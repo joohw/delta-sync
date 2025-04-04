@@ -9,7 +9,3 @@ export * from './core/SyncEngine';
 
 // Export adapters
 export * from './core/adapters/MemoryAdapter';
-
-// Export testers
-export * from './tester/AdapterTester';
-export * from './tester/CoordinatorTester';
