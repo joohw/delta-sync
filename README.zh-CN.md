@@ -2,54 +2,24 @@
 
 一句话介绍：一个极致轻量的双向同步框架
 
-DeltaSync 专为需要轻量级、高效、可靠的数据同步解决方案的应用而设计，特别适合需要离线优先体验的场景。
+DeltaSync 是一个专门为现代应用设计的数据同步框架，它能帮助开发者轻松实现数据的双向同步、离线存储和冲突处理。无论是 Web 应用、移动应用还是桌面应用，DeltaSync 都能提供一致的同步体验。
 
-其模块化设计和适配器模式使其能够轻松集成到各种应用架构中。
 
 
 
 ## 特性
 
-- **极致轻量化**：简单整合到任何数据库系统
-- **自动版本跟踪**：每条数据自动带有版本号，确保同步一致性
-- **冲突解决**：基于时间戳的自动冲突解决策略
-- **文件附件同步**：支持数据关联文件的同步
-- **自定义同步策略**：可根据应用需求定制同步行为
-- **批处理性能**：批量处理数据变更提高性能
-- **事件驱动架构**：易于集成到各种应用框架中
-- **离线优先支持**：完全支持离线操作和自动恢复同步
-- **TypeScript友好**：完整的类型定义提供良好的开发体验
-- **端到端加密支持**：保护敏感数据安全
+- **轻量灵活**: 核心代码不到1500行,无复杂依赖
+- **适配器模式**: 轻松对接任意数据库系统
+- **版本管理**: 自动跟踪数据变更,确保同步一致性
+- **增量同步**: 仅同步变更数据,提高性能
+- **离线支持**: 完整的离线工作支持
+- **类型安全**: 使用 TypeScript 编写,提供完整类型定义
+- **自动重试**: 网络异常时自动重试
+- **批量处理**: 支持批量数据同步
+- **完整事件**: 提供丰富的同步事件回调
 
-
-## 同步机制
-
-通过适配器写入的数据会自动追加一条和同步相关的元数据，包括变更时间戳、操作类型、版本号等。
-
-元数据存储在用于高效比对的视图表中，在同步过程中通过比较视图表来实现增量同步和版本控制。
-
-
-## 离线支持
-完全离线工作：所有操作在本地正常执行
-变更队列：离线期间的变更排队等待同步
-自动恢复：网络连接恢复后自动同步累积变更
-冲突处理：解决离线期间可能发生的数据冲突
-
-## 端到端加密支持
-
-支持端到端加密：可配置敏感数据的加密
-传输安全：依赖传输层安全协议
-
-## 部署灵活性
-
-DeltaSync 可以部署在多种环境：
-Web 应用与 PWA
-移动应用（React Native、Flutter）
-桌面应用（Electron）
-服务器端（Node.js）
-
-
-## Installation
+## 安装
 
 ```bash
 npm install delta-sync
@@ -57,93 +27,156 @@ npm install delta-sync
 
 
 
-## 冲突解决 (Conflict Resolution)
+## 快速开始
 
-DeltaSync 默认采用"最后修改胜出"的策略解决冲突。
-版本号包括文件版本号和整体版本号，文件版本号表示修改时的仓库版本号，仓库版本号是整体自增的。
-当多个设备对同一数据进行修改时，系统会根据版本号决定以哪个版本为准。
+1. 创建数据库适配器:
+```
+typescript
+import { DatabaseAdapter } from 'delta-sync';
+
+class MyDatabaseAdapter implements DatabaseAdapter {
+// 实现必要的接口方法
+async readStore<T>(storeName: string, limit?: number, offset?: number) {
+// 实现数据读取逻辑
+}
+
+async putBulk<T>(storeName: string, items: T[]) {
+// 实现批量写入逻辑
+}
+
+// ...其他接口实现
+}
+```
+或者使用现成的适配器：
 
 
+```
+import { MemoryAdapter } from 'delta-sync';
 
-## 实现原理
-DeltaSync 通过 DataAdapter 接口实现数据库无关的同步机制，支持多种存储解决方案。
-只需要实现这里的存储适配器，就可以无缝集成到任何应用中。
+```
 
 
-## 适配器测试工具
-
-DeltaSync 提供了全面的适配器测试工具，帮助开发者验证自定义数据库适配器的实现是否符合规范。
-这些工具可以轻松检测适配器的功能完整性、正确性和性能表现。
-
+2. 初始化同步引擎:
 ```typescript
-import { testAdapterFunctionality, testAdapterPerformance } from 'delta-sync/test';
-import { MyDatabaseAdapter } from './my-adapter';
+import { SyncEngine } from 'delta-sync';
 
-// 创建适配器实例
-const adapter = new MyDatabaseAdapter();
-// 功能测试
-const functionalResults = await testAdapterFunctionality(adapter);
-console.log('功能测试通过:', functionalResults.success);
-// 性能测试
-const performanceResults = await testAdapterPerformance(adapter, {
-  itemCount: 200,    // 测试数据量
-  iterations: 3,     // 重复测试次数
-  fileSize: 512 * 1024 // 测试文件大小
+const localAdapter = new MyDatabaseAdapter();
+const cloudAdapter = new MyCloudAdapter();
+
+const engine = new SyncEngine(localAdapter, {
+autoSync: {
+enabled: true,
+pullInterval: 30000, // 每30秒自动同步
+pushDebounce: 5000 // 本地更改5秒后推送
+},
+onStatusUpdate: (status) => {
+console.log('同步状态:', status);
+}
+});
+
+// 设置云端适配器
+await engine.setCloudAdapter(cloudAdapter);
+```
+
+3 数据操作:
+```typescript
+// 保存数据
+await engine.save('notes', {
+id: '1',
+title: '测试笔记',
+content: '内容...'
+});
+
+// 删除数据
+await engine.delete('notes', '1');
+
+// 查询数据
+const result = await engine.query('notes', {
+limit: 10,
+offset: 0
 });
 ```
 
-## 核心架构
 
-适配器层 (Adapter Layer)
+## 同步原理
 
-DataAdapter 接口：定义了一套通用的数据操作接口，包括读取、写入、删除等基本操作
-专用适配器：为各种数据库系统提供具体实现，如 IndexedDB、SQLite、REST API 等
-无缝转换：将各种数据库的特定 API 转换为统一的接口，屏蔽底层差异
+DeltaSync 采用基于版本的增量同步机制:
 
-同步协调层 (Sync Coordination)
+1. **本地更改**: 所有通过同步引擎的数据操作都会被自动记录版本信息
 
-SyncCoordinator：客户端协调器，负责跟踪本地数据变更
-CloudCoordinator：服务端协调器，处理来自多个客户端的同步请求
-自动变更记录：任何通过协调层的数据操作都会自动记录变更信息
+2. **变更追踪**: 使用 SyncView 存储所有数据的最新版本信息
 
+3. **增量同步**: 
+- Push: 将本地新版本数据推送到云端
+- Pull: 拉取云端新版本数据到本地
+- 冲突处理: 采用"最新版本胜出"策略
 
-数据版本跟踪 (Version Tracking)
-
-版本号机制：每条数据都附带版本号(_version)，基于时间戳自动更新
-
-
+4. **离线支持**: 
+- 离线时正常工作
+- 网络恢复后自动同步
+- 防止重复同步
 
 
-### 同步流程 (Sync Process)
+## 高级功能
 
-变更跟踪：本地操作通过协调层自动记录到变更表
-
-变更推送：客户端将本地变更推送到服务器，由服务器添加版本号并记录到服务端变更表
-
-冲突检测：服务器检测并解决可能的冲突（按照最后修改胜出策略）
-
-变更拉取：客户端使用时间戳参数拉取服务端变更表
-
-本地应用：客户端应用远程变更到本地数据库
+### 自定义同步选项
 
 
-### 事件监听 (Event-Driven Architecture)
+```
+typescript
+engine.updateSyncOptions({
+maxRetries: 3, // 最大重试次数
+timeout: 30000, // 超时时间(ms)
+batchSize: 100, // 批量同步大小
+maxFileSize: 10485760, // 最大文件大小(10MB)
+fileChunkSize: 1048576 // 文件分片大小(1MB)
+});
+```
 
-DeltaSync 采用事件驱动架构，通过事件驱动模型实现同步机制。
-提供了对以下事件的监听和响应机制：
-onChangesPulled((changes: Change[]) => void)：当服务端变更拉取到本地时触发
-onChangesPushed((changes: Change[]) => void)：当本地变更推送到服务端时触发
+### 同步事件监听
+
+```typescript
+const options = {
+onStatusUpdate: (status) => {
+console.log('同步状态:', status);
+},
+onChangePushed: (changes) => {
+console.log('推送变更:', changes);
+},
+onChangePulled: (changes) => {
+console.log('拉取变更:', changes);
+}
+};
+```
 
 
-事件模型：
-- 变更事件：当数据发生变更时，触发变更事件
-- 状态变更事件：当同步状态发生变化时，触发状态变更事件
+### 手动控制同步
+
+```typescript
+await engine.sync();
+
+// 仅推送本地更改
+await engine.push();
+
+// 仅拉取远程更改
+await engine.pull();
+```
+
+## 适配器开发
+
+开发自定义适配器需实现 `DatabaseAdapter` 接口:
+
+typescript
+export interface DatabaseAdapter {
+readStore<T>(...): Promise<SyncQueryResult<T>>;
+readBulk<T>(...): Promise<T[]>;
+putBulk<T>(...): Promise<T[]>;
+deleteBulk(...): Promise<void>;
+clearStore(...): Promise<boolean>;
+getStores(): Promise<string[]>;
+}
 
 
+## 许可证
 
-### 离线支持 (Offline Support)
-
-完全离线工作：应用可以在离线状态下正常工作，所有操作都在本地记录
-自动同步恢复：网络连接恢复后，自动同步积累的变更
-并发控制：防止多次同步请求同时执行导致的问题
-该架构设计使 DeltaSync 能够在保持轻量级的同时，提供强大的跨数据库同步能力，适用于各种需要离线优先、实时数据同步的应用场景。
+MIT
