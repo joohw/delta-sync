@@ -6,7 +6,7 @@ DeltaSync is a data synchronization framework designed for modern applications, 
 
 ## Core Features
 
-- **Lightweight & Flexible**: Core code less than 500 lines, zero dependencies
+- **Lightweight & Flexible**: Core code less than 500 lines, few dependencies
 - **Adapter Pattern**: Easily integrate with any database system
 - **Version Control**: Automatically track data changes, ensure sync consistency
 - **Incremental Sync**: Only synchronize changed data for better performance
