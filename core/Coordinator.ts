@@ -12,7 +12,7 @@ import {
 } from './types';
 
 interface SerializedSyncView {
-  id: string;  // 添加必需的 id 字段
+  id: string;  
   items: Array<SyncViewItem>;
 }
 
@@ -44,7 +44,7 @@ export class Coordinator implements ICoordinator {
       }
       this.initialized = true;
     } catch (error) {
-      console.error('初始化同步视图失败:', error);
+      console.error('Failed to initialize sync engine:', error);
       throw error;
     }
   }
@@ -63,7 +63,7 @@ export class Coordinator implements ICoordinator {
       this.syncView.clear();
       this.initialized = false;
     } catch (error) {
-      console.error('清理同步视图失败:', error);
+      console.error('Failed to dispose sync engine:', error);
       throw error;
     }
   }
@@ -78,7 +78,7 @@ export class Coordinator implements ICoordinator {
     if (result.length > 0 && result[0]?.items) {
       return SyncView.deserialize(JSON.stringify(result[0].items));
     }
-    return new SyncView(); // 返回空视图
+    return new SyncView(); // Return an empty view
   }
 
 
@@ -95,7 +95,7 @@ export class Coordinator implements ICoordinator {
   }
 
 
-  // 通过协调器写入的数据会被追加到syncView用于同步比对
+  // Data put to the adapter will be tagged with a new version number.
   async putBulk<T extends { id: string }>(
     storeName: string,
     items: T[],
@@ -183,9 +183,7 @@ export class Coordinator implements ICoordinator {
           });
         });
       }
-      // 直接应用更新操作
       for (const [store, changes] of changeSet.put) {
-        console.log('changes:', changes.map(c => c.data as T));
         await this.adapter.putBulk(store, changes.map(c => c.data as T));
         changes.forEach(change => {
           this.syncView.upsert({
@@ -197,7 +195,7 @@ export class Coordinator implements ICoordinator {
       }
       await this.persistView();
     } catch (error) {
-      console.error('应用更改失败:', error);
+      console.error('Failed to apply changes:', error);
       throw error;
     }
   }
@@ -225,7 +223,7 @@ export class Coordinator implements ICoordinator {
       }
       await this.persistView();
     } catch (error) {
-      console.error('删除数据失败:', error);
+      console.error('Failed to delete data:', error);
       throw error;
     }
   }
@@ -240,7 +238,6 @@ export class Coordinator implements ICoordinator {
 
 
   private async rebuildSyncView(): Promise<void> {
-    console.log('重建同步视图...');
     try {
       this.syncView.clear();
       const stores = await this.adapter.getStores();
@@ -269,7 +266,7 @@ export class Coordinator implements ICoordinator {
       }
       await this.persistView();
     } catch (error) {
-      console.error('重建同步视图失败:', error);
+      console.error('Failed to rebuild sync view:', error);
       throw error;
     }
   }
@@ -297,13 +294,12 @@ export class Coordinator implements ICoordinator {
     await this.ensureInitialized();
     const { since = 0, offset = 0, limit = 100 } = options;
     try {
-      // 从适配器直接读取数据
       const result = await this.adapter.readStore<T>(
         storeName,
         limit,
         offset
       );
-      // 如果需要过滤版本
+
       if (since > 0) {
         const filteredItems = result.items.filter(item => {
           const viewItem = this.syncView.get(storeName, item.id);
@@ -334,7 +330,7 @@ export class Coordinator implements ICoordinator {
         [serializedView]
       );
     } catch (error) {
-      console.error('保存同步视图失败:', error);
+      console.error('Failed to persist view:', error);
       throw error;
     }
   }

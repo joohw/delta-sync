@@ -10,16 +10,16 @@ import {
     SyncQueryOptions,
     SyncQueryResult,
 } from './types';
-
 import { Coordinator } from './Coordinator'
 
 
 export class SyncEngine implements ISyncEngine {
 
+
     private localCoordinator: Coordinator;
     private cloudCoordinator?: Coordinator;
     private options: SyncOptions;
-    private syncStatus: SyncStatus = SyncStatus.IDLE;
+    private syncStatus: SyncStatus = SyncStatus.OFFLINE;
     private isInitialized: boolean = false;
     private pullTimer?: ReturnType<typeof setInterval>;    // 定时拉取定时器
     private pushDebounceTimer?: ReturnType<typeof setTimeout>;  // 推送防抖定时器
@@ -40,7 +40,7 @@ export class SyncEngine implements ISyncEngine {
                 enabled: false,
                 pullInterval: 60000,    // 默认30秒拉取一次
                 pushDebounce: 10000,    // 默认10秒防抖
-                retryDelay: 1000,       // 默认1秒重试延迟
+                retryDelay: 3000,       // 默认3秒重试延迟
                 ...options.autoSync
             },
             maxRetries: 3,
@@ -75,7 +75,6 @@ export class SyncEngine implements ISyncEngine {
 
 
     async setCloudAdapter(cloudAdapter: DatabaseAdapter): Promise<void> {
-        console.log('[SyncEngine] Setting cloud adapter:', cloudAdapter);
         this.updateStatus(SyncStatus.IDLE)
         this.cloudCoordinator = new Coordinator(cloudAdapter);
     }
@@ -114,7 +113,6 @@ export class SyncEngine implements ISyncEngine {
 
     // 同步操作方法
     async sync(): Promise<SyncResult> {
-        console.log('[SyncEngine] Syncing...');
         if (!this.cloudCoordinator) {
             this.updateStatus(SyncStatus.OFFLINE);
             return {
@@ -126,8 +124,6 @@ export class SyncEngine implements ISyncEngine {
         try {
             const pullResult = await this.pull();
             const pushResult = await this.push();
-            this.updateStatus(SyncStatus.IDLE);
-            console.log('[SyncEngine] Sync completed');
             return {
                 success: pullResult.success && pushResult.success,
                 error: pullResult.success ? pushResult.error : pullResult.error,
@@ -151,13 +147,20 @@ export class SyncEngine implements ISyncEngine {
 
 
     async pull(): Promise<SyncResult> {
-        console.log('[SyncEngine] Pulling...');
         if (!this.cloudCoordinator) {
-            console.log('[SyncEngine] Pull skipped, cloud adapter not set');
             this.updateStatus(SyncStatus.OFFLINE);
             return {
                 success: false,
                 error: 'Cloud adapter not set',
+                stats: { uploaded: 0, downloaded: 0, errors: 1 }
+            };
+        }
+        const canPull = await this.checkPullAvailable();
+        if (!canPull) {
+            this.updateStatus(SyncStatus.ERROR);
+            return {
+                success: false,
+                error: 'Pull not available',
                 stats: { uploaded: 0, downloaded: 0, errors: 1 }
             };
         }
@@ -166,7 +169,6 @@ export class SyncEngine implements ISyncEngine {
             await this.cloudCoordinator.refreshView();
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
-            console.log('[SyncEngine] Comparing views for pull');
             const { toDownload } = SyncView.diffViews(localView, cloudView);
             if (toDownload.length === 0) {
                 this.updateStatus(SyncStatus.IDLE);
@@ -176,7 +178,6 @@ export class SyncEngine implements ISyncEngine {
                     stats: { uploaded: 0, downloaded: 0, errors: 0 }
                 };
             }
-            console.log('[SyncEngine] Extracting changes for pull:', toDownload.length, 'items');
             const changeSet = await this.cloudCoordinator.extractChanges(toDownload);
             let downloadedCount = 0;
             for (const itemChanges of changeSet.put.values()) {
@@ -191,12 +192,9 @@ export class SyncEngine implements ISyncEngine {
                 this.options.onVersionUpdate(latestVersion);
             }
             // 应用更改到本地
-            console.log('[SyncEngine] Applying changes to local storage');
             await this.localCoordinator.applyChanges(changeSet);
-            // 触发拉取回调
             this.options.onChangePulled?.(changeSet);
             this.updateStatus(SyncStatus.IDLE);
-            console.log('[SyncEngine] Pull completed successfully');
             return {
                 success: true,
                 syncedAt: Date.now(),
@@ -216,16 +214,23 @@ export class SyncEngine implements ISyncEngine {
             };
         }
     }
-    
+
 
     async push(): Promise<SyncResult> {
-        console.log('[SyncEngine] Pushing...');
         if (!this.cloudCoordinator) {
             this.updateStatus(SyncStatus.OFFLINE);
-            console.log('[SyncEngine] Push skipped, cloud adapter not set');
             return {
                 success: false,
                 error: 'Cloud adapter not set',
+                stats: { uploaded: 0, downloaded: 0, errors: 1 }
+            };
+        }
+        const canPush = await this.checkPushAvailable();
+        if (!canPush) {
+            this.updateStatus(SyncStatus.ERROR);
+            return {
+                success: false,
+                error: 'Push not available',
                 stats: { uploaded: 0, downloaded: 0, errors: 1 }
             };
         }
@@ -234,8 +239,6 @@ export class SyncEngine implements ISyncEngine {
             await this.cloudCoordinator.refreshView();
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
-            console.log('[SyncEngine] Comparing views for push');
-            
             const { toUpload } = SyncView.diffViews(localView, cloudView);
             if (toUpload.length === 0) {
                 this.updateStatus(SyncStatus.IDLE);
@@ -245,10 +248,7 @@ export class SyncEngine implements ISyncEngine {
                     stats: { uploaded: 0, downloaded: 0, errors: 0 }
                 };
             }
-    
-            console.log('[SyncEngine] Extracting changes for push:', toUpload.length, 'items');
             const changeSet = await this.localCoordinator.extractChanges(toUpload);
-            
             let uploadedCount = 0;
             for (const itemChanges of changeSet.put.values()) {
                 uploadedCount += itemChanges.length;
@@ -256,23 +256,16 @@ export class SyncEngine implements ISyncEngine {
             for (const itemChanges of changeSet.delete.values()) {
                 uploadedCount += itemChanges.length;
             }
-    
             // 执行云端更新
-            console.log('[SyncEngine] Applying changes to cloud');
             await this.cloudCoordinator.applyChanges(changeSet);
-    
             // 更新版本号
             const latestVersion = Math.max(...toUpload.map(item => item._ver));
             if (latestVersion && this.options.onVersionUpdate) {
                 this.options.onVersionUpdate(latestVersion);
             }
-    
             // 触发推送回调
             this.options.onChangePushed?.(changeSet);
-            
             this.updateStatus(SyncStatus.IDLE);
-            console.log('[SyncEngine] Push completed successfully');
-            
             return {
                 success: true,
                 syncedAt: Date.now(),
@@ -292,7 +285,7 @@ export class SyncEngine implements ISyncEngine {
             };
         }
     }
-    
+
 
 
 
@@ -323,12 +316,12 @@ export class SyncEngine implements ISyncEngine {
             enabled: true,
             pullInterval: pullInterval || currentAutoSync.pullInterval || 30000000
         };
-        console.log('[SyncEngine] Enabling auto sync with pull interval:',
-            this.options.autoSync.pullInterval);
+            this.options.autoSync.pullInterval;
         this.pullTimer = setInterval(() => {
             this.executePullTask();
         }, this.options.autoSync.pullInterval);
     }
+
 
 
     disableAutoSync(): void {
@@ -363,26 +356,20 @@ export class SyncEngine implements ISyncEngine {
 
     // 本地数据变更触发推送
     private handleDataChange(): void {
-        console.log('[SyncEngine] Data change detected at:', new Date().toISOString());
         if (!this.options.autoSync?.enabled) {
-            console.log('[SyncEngine] Auto sync disabled, skipping push');
             return;
         }
         if (!this.cloudCoordinator) {
-            console.log('[SyncEngine] No cloud coordinator, skipping push');
             return;
         }
         if (this.pushDebounceTimer) {
             clearTimeout(this.pushDebounceTimer);
         }
-        console.log('[SyncEngine] Scheduling push task');
         this.pushDebounceTimer = setTimeout(async () => {
             try {
                 if (this.canTriggerSync()) {
-                    console.log('[SyncEngine] Executing scheduled push');
                     await this.push();
                 } else {
-                    console.log('[SyncEngine] Push skipped due to conditions not met');
                 }
             } catch (error) {
                 console.error('[SyncEngine] Scheduled push failed:', error);
@@ -548,6 +535,35 @@ export class SyncEngine implements ISyncEngine {
         this.updateStatus(SyncStatus.OFFLINE);
     }
 
+    private async checkPullAvailable(): Promise<boolean> {
+        if (this.options.onPullAvailableCheck) {
+            try {
+                const result = await Promise.resolve(this.options.onPullAvailableCheck());
+                if (!result) {
+                }
+                return result;
+            } catch (error) {
+                console.error('[SyncEngine] Pull availability check failed:', error);
+                return false;
+            }
+        }
+        return true;
+    }
+
+
+    private async checkPushAvailable(): Promise<boolean> {
+        if (this.options.onPushAvailableCheck) {
+            try {
+                const result = await Promise.resolve(this.options.onPushAvailableCheck());
+                return result;
+            } catch (error) {
+                console.error('[SyncEngine] Push availability check failed:', error);
+                return false;
+            }
+        }
+        return true;
+    }
+
 
     // 私有辅助方法
     private updateStatus(status: SyncStatus): void {
@@ -561,5 +577,4 @@ export class SyncEngine implements ISyncEngine {
             }
         }
     }
-
 }

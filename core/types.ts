@@ -4,9 +4,9 @@ export type SyncOperationType = 'put' | 'delete';
 
 
 export interface SyncQueryOptions {
-    since?: number;      // 查询某个_ver之后的数据
-    limit?: number;      // 限制返回数量
-    offset?: number;     // 起始位置
+    since?: number;      // Query data after specified _ver
+    limit?: number;      // Limit number of returned items
+    offset?: number;     // Starting position
 }
 
 
@@ -22,7 +22,7 @@ export interface SyncProgress {
 }
 
 
-// 返回的同步请求模型
+// model for synchronization result
 export interface SyncResult {
     success: boolean;
     error?: string;
@@ -46,7 +46,7 @@ export enum SyncStatus {
 }
 
 
-export interface SyncOptions<T extends { id: string } = any> {
+export interface SyncOptions {
     autoSync?: {
         enabled?: boolean;
         pullInterval?: number;
@@ -57,12 +57,14 @@ export interface SyncOptions<T extends { id: string } = any> {
     onVersionUpdate?: (_ver: number) => void;
     onChangePushed?: (changes: DataChangeSet) => void;
     onChangePulled?: (changes: DataChangeSet) => void;
-    maxRetries?: number;    // 最大重试次数
-    timeout?: number;       // 超时时间(毫秒)
-    batchSize?: number;     // 同步批次的数量
-    payloadSize?: number;   // 传输的对象最大大小(字节)
-    maxFileSize?: number;   // 最大支持的文件大小(字节)
-    fileChunkSize?: number; // 文件分块存储的单块大小(字节)
+    onPullAvailableCheck?: () => boolean;   // pull availability check function
+    onPushAvailableCheck?: () => boolean;   // push availability check function
+    maxRetries?: number;    // maximum retry count
+    timeout?: number;       // timeout in milliseconds
+    batchSize?: number;     // sync batch size
+    payloadSize?: number;   // maximum object size in bytes
+    maxFileSize?: number;   // maximum supported file size in bytes
+    fileChunkSize?: number; // single chunk size for file storage in bytes
 }
 
 
@@ -70,14 +72,14 @@ export interface SyncViewItem {
     id: string;
     store: string;
     _ver: number;
-    deleted?: boolean;      // 标记是否被删除
-    isAttachment?: boolean; // 标记是否为附件
+    deleted?: boolean;      // markd as deleted
+    isAttachment?: boolean; // markd as attachment
 }
 
 
 export interface DataChange<T = any> {
     id: string;
-    data?: T;   //变更后的数据，可能为空
+    data?: T;   //data for put operation
     _ver: number;
 }
 
@@ -88,6 +90,7 @@ export interface DataChangeSet {
 }
 
 
+
 export class SyncView {
     private items: Map<string, SyncViewItem>;
     private storeIndex: Map<string, Set<string>>;
@@ -95,7 +98,7 @@ export class SyncView {
         this.items = new Map();
         this.storeIndex = new Map();
     }
-    // 添加或更新记录
+    // Add or update record
     upsert(item: SyncViewItem): void {
         const key = this.getKey(item.store, item.id);
         this.items.set(key, item);
@@ -104,17 +107,17 @@ export class SyncView {
         }
         this.storeIndex.get(item.store)!.add(item.id);
     }
-    // 批量更新
+    // Batch update records
     upsertBatch(items: SyncViewItem[]): void {
         for (const item of items) {
             this.upsert(item);
         }
     }
-    // 获取特定记录
+    // Get specific record
     get(store: string, id: string): SyncViewItem | undefined {
         return this.items.get(this.getKey(store, id));
     }
-    // 分页获取指定 store 的所有记录
+    // Get paginated records for specified store
     getByStore(store: string, offset: number = 0, limit: number = 100): SyncViewItem[] {
         const storeItems = this.storeIndex.get(store);
         if (!storeItems) return [];
@@ -123,11 +126,11 @@ export class SyncView {
             .map(id => this.items.get(this.getKey(store, id))!)
             .filter(item => item !== undefined);
     }
-    // 获取所有 store 的名称
+    // Get all store names
     getStores(): string[] {
         return Array.from(this.storeIndex.keys())
     }
-    // 比较两个视图的差异
+    // Compare differences between two views
     static diffViews(local: SyncView, remote: SyncView): {
         toDownload: SyncViewItem[];
         toUpload: SyncViewItem[];
@@ -136,19 +139,19 @@ export class SyncView {
         const toUpload: SyncViewItem[] = [];
         const localKeys = new Set(local.items.keys());
         const remoteKeys = new Set(remote.items.keys());
-        // 仅本地存在的键（需要上传）
+        // Keys only in local (need to upload)
         for (const key of localKeys) {
             if (!remoteKeys.has(key)) {
                 toUpload.push(local.items.get(key)!);
             }
         }
-        // 仅远程存在的键（需要下载）
+        // Keys only in remote (need to download)
         for (const key of remoteKeys) {
             if (!localKeys.has(key)) {
                 toDownload.push(remote.items.get(key)!);
             }
         }
-        // 共同存在的键（需要比对版本）
+        // Keys in both (need version comparison)
         for (const key of localKeys) {
             if (remoteKeys.has(key)) {
                 const localItem = local.items.get(key)!;
@@ -163,35 +166,34 @@ export class SyncView {
         return { toDownload, toUpload };
     }
 
-
-    // 生成复合键
+    // Generate composite key
     private getKey(store: string, id: string): string {
         return `${store}:${id}`;
     }
-    // 删除记录
+    // Delete record
     delete(store: string, id: string): void {
         const key = this.getKey(store, id);
         this.items.delete(key);
         this.storeIndex.get(store)?.delete(id);
     }
-    // 获取存储大小
+    // Get total storage size
     size(): number {
         return this.items.size;
     }
-    // 获取特定 store 的记录数量
+    // Get record count for specific store
     storeSize(store: string): number {
         return this.storeIndex.get(store)?.size || 0;
     }
-    // 清除所有数据
+    // Clear all data
     clear(): void {
         this.items.clear();
         this.storeIndex.clear();
     }
-    // 序列化视图数据（用于持久化）
+    // Serialize view data (for persistence)
     serialize(): string {
         return JSON.stringify(Array.from(this.items.values()));
     }
-    // 从序列化数据恢复（用于持久化）
+    // Deserialize from data (for persistence)
     static deserialize(data: string): SyncView {
         const view = new SyncView();
         const items = JSON.parse(data) as SyncViewItem[];
@@ -202,7 +204,7 @@ export class SyncView {
 
 
 
-// 数据库适配器,支持任意类型的数据库
+//  any database adapter to the SyncEngine
 export interface DatabaseAdapter {
     readStore<T extends { id: string }>(
         storeName: string,
@@ -225,19 +227,19 @@ export interface DatabaseAdapter {
 
 
 
-// 本地协调器接口定义
+// Local coordinator interface definition
 export interface ICoordinator {
-    // 生命周期方法
-    initSync?: () => Promise<void>;     // 可选：初始化时执行
-    disposeSync?: () => Promise<void>;  // 可选：卸载时执行
-    // 核心数据操作方法
+    // Lifecycle methods
+    initSync?: () => Promise<void>;     // Optional: execute during initialization
+    disposeSync?: () => Promise<void>;  // Optional: execute during disposal
+    // Core data operation methods
     query<T extends { id: string }>(
         storeName: string,
         options?: SyncQueryOptions
     ): Promise<SyncQueryResult<T>>;
-    // 同步视图相关
+    // Sync view related
     getCurrentView(): Promise<SyncView>;
-    // 批量数据操作
+    // Bulk data operations
     readBulk<T extends { id: string }>(
         storeName: string,
         ids: string[]
@@ -258,13 +260,13 @@ export interface ICoordinator {
 
 
 export interface ISyncEngine {
-    // 初始化
+    // Initialize sync engine
     initialize(): Promise<void>;
-    // 自动同步控制
+    // Auto sync control
     enableAutoSync(interval?: number): void;
     disableAutoSync(): void;
     updateSyncOptions(options: Partial<SyncOptions>): SyncOptions;
-    // 云端适配器设置
+    // Cloud adapter configuration
     setCloudAdapter(cloudAdapter: DatabaseAdapter): Promise<void>;
     save<T extends { id: string }>(
         storeName: string,
