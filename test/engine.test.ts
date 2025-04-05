@@ -53,7 +53,13 @@ describe('SyncEngine Tests', () => {
             const testItem = { id: 'test1', content: 'test content' }
             const result = await engine.save('test_store', testItem)
             expect(result).toHaveLength(1)
-            expect(result[0]).toEqual(testItem)
+            // 使用对象匹配器而不是严格相等
+            expect(result[0]).toMatchObject({
+                id: testItem.id,
+                content: testItem.content
+            })
+            // 确保存在 _ver 字段
+            expect(result[0]).toHaveProperty('_ver')
         })
 
         it('should save multiple items', async () => {
@@ -63,9 +69,15 @@ describe('SyncEngine Tests', () => {
             ]
             const result = await engine.save('test_store', testItems)
             expect(result).toHaveLength(2)
-            expect(result).toEqual(expect.arrayContaining(testItems))
+            
+            // 验证每个项目的基本属性
+            result.forEach((item, index) => {
+                expect(item).toMatchObject({
+                    id: testItems[index].id,
+                    content: testItems[index].content
+                })
+            })
         })
-
         it('should delete items', async () => {
             const testItem = { id: 'delete-test', content: 'to be deleted' }
             await engine.save('test_store', testItem)
@@ -191,20 +203,32 @@ describe('SyncEngine Tests', () => {
     
         it('should handle offline status', async () => {
             await engine.initialize()
-    
-            // 使用新的 mock 函数
+            await engine.setCloudAdapter(cloudAdapter)
             const statusUpdateFn = vi.fn()
             engine.updateSyncOptions({
                 onStatusUpdate: statusUpdateFn
             })
-    
+        
             // 断开连接
             engine.disconnectCloud()
-    
-            // 尝试同步触发离线状态
-            await engine.sync()
-    
-            // 验证状态更新
+            
+            // 等待一个微任务周期
+            await Promise.resolve()
+            
+            // 验证是否调用了状态更新
+            expect(statusUpdateFn).toHaveBeenCalledWith(SyncStatus.OFFLINE)
+            
+            // 清除之前的调用记录
+            statusUpdateFn.mockClear()
+        
+            // 尝试同步
+            const syncResult = await engine.sync()
+            
+            // 验证同步结果
+            expect(syncResult.success).toBe(false)
+            expect(syncResult.error).toBe('Cloud adapter not set')
+            
+            // 验证状态更新被再次调用
             expect(statusUpdateFn).toHaveBeenCalledWith(SyncStatus.OFFLINE)
         })
     

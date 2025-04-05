@@ -521,7 +521,7 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
-    // 清理方法
+    // dispose
     dispose(): void {
         this.disableAutoSync();
         this.syncStatus = SyncStatus.OFFLINE;
@@ -529,11 +529,12 @@ export class SyncEngine implements ISyncEngine {
         this.isInitialized = false;
     }
 
-    // 断开连接
+    // disconnect cloud adapter
     disconnectCloud(): void {
-        this.cloudCoordinator = undefined;
         this.updateStatus(SyncStatus.OFFLINE);
+        this.cloudCoordinator = undefined;
     }
+
 
     private async checkPullAvailable(): Promise<boolean> {
         if (this.options.onPullAvailableCheck) {
@@ -565,9 +566,8 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
-    // 私有辅助方法
+    // private methods
     private updateStatus(status: SyncStatus): void {
-        if (this.syncStatus === status) return;
         this.syncStatus = status;
         if (this.options.onStatusUpdate) {
             try {
