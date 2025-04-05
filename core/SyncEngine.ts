@@ -21,8 +21,8 @@ export class SyncEngine implements ISyncEngine {
     private options: SyncOptions;
     private syncStatus: SyncStatus = SyncStatus.OFFLINE;
     private isInitialized: boolean = false;
-    private pullTimer?: ReturnType<typeof setInterval>;    // 定时拉取定时器
-    private pushDebounceTimer?: ReturnType<typeof setTimeout>;  // 推送防抖定时器
+    private pullTimer?: ReturnType<typeof setInterval>; 
+    private pushDebounceTimer?: ReturnType<typeof setTimeout>;
 
 
     constructor(
@@ -38,9 +38,9 @@ export class SyncEngine implements ISyncEngine {
         return {
             autoSync: {
                 enabled: false,
-                pullInterval: 60000,    // 默认30秒拉取一次
-                pushDebounce: 10000,    // 默认10秒防抖
-                retryDelay: 3000,       // 默认3秒重试延迟
+                pullInterval: 60000,
+                pushDebounce: 10000,
+                retryDelay: 3000, 
                 ...options.autoSync
             },
             maxRetries: 3,
@@ -111,7 +111,6 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
-    // 同步操作方法
     async sync(): Promise<SyncResult> {
         if (!this.cloudCoordinator) {
             this.updateStatus(SyncStatus.OFFLINE);
@@ -186,12 +185,10 @@ export class SyncEngine implements ISyncEngine {
             for (const itemChanges of changeSet.delete.values()) {
                 downloadedCount += itemChanges.length;
             }
-            // 更新版本号
             const latestVersion = Math.max(...toDownload.map(item => item._ver));
             if (latestVersion && this.options.onVersionUpdate) {
                 this.options.onVersionUpdate(latestVersion);
             }
-            // 应用更改到本地
             await this.localCoordinator.applyChanges(changeSet);
             this.options.onChangePulled?.(changeSet);
             this.updateStatus(SyncStatus.IDLE);
@@ -256,14 +253,11 @@ export class SyncEngine implements ISyncEngine {
             for (const itemChanges of changeSet.delete.values()) {
                 uploadedCount += itemChanges.length;
             }
-            // 执行云端更新
             await this.cloudCoordinator.applyChanges(changeSet);
-            // 更新版本号
             const latestVersion = Math.max(...toUpload.map(item => item._ver));
             if (latestVersion && this.options.onVersionUpdate) {
                 this.options.onVersionUpdate(latestVersion);
             }
-            // 触发推送回调
             this.options.onChangePushed?.(changeSet);
             this.updateStatus(SyncStatus.IDLE);
             return {
@@ -305,7 +299,6 @@ export class SyncEngine implements ISyncEngine {
 
 
 
-    // 自动同步控制
     enableAutoSync(pullInterval?: number): void {
         if (this.pullTimer) {
             clearInterval(this.pullTimer);
@@ -341,7 +334,6 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
-    // 拆分为独立的拉取任务
     private async executePullTask(): Promise<void> {
         if (this.syncStatus !== SyncStatus.IDLE) {
             return;
@@ -354,7 +346,7 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
-    // 本地数据变更触发推送
+    // callback
     private handleDataChange(): void {
         if (!this.options.autoSync?.enabled) {
             return;
@@ -378,7 +370,7 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
-    // 添加同步条件检查方法
+
     private canTriggerSync(): boolean {
         const isAutoSyncEnabled = this.options.autoSync?.enabled === true;
         const canSync = Boolean(
@@ -390,14 +382,12 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
-    // 配置更新
+    
     updateSyncOptions(options: Partial<SyncOptions>): SyncOptions {
-        // 更新选项
         this.options = this.mergeDefaultOptions({
             ...this.options,
             ...options
         });
-        // 处理自动同步设置
         if (options.autoSync) {
             if (options.autoSync.enabled) {
                 this.enableAutoSync(options.autoSync.pullInterval);
@@ -414,7 +404,6 @@ export class SyncEngine implements ISyncEngine {
             throw new Error('Cloud adapter not set');
         }
         try {
-            // 更新状态为操作中
             this.updateStatus(SyncStatus.OPERATING);
             const cloudAdapter = await this.cloudCoordinator.getAdapter();
             const availableStores = await cloudAdapter.getStores();
@@ -506,12 +495,12 @@ export class SyncEngine implements ISyncEngine {
 
 
 
-    // 实例获取
+    // get local coordinator
     getlocalCoordinator(): Coordinator {
         return this.localCoordinator;
     }
 
-    // 获取本地数据库适配器
+    // get local adapter
     getlocalAdapter(): DatabaseAdapter {
         return this.localCoordinator.adapter;
     }
