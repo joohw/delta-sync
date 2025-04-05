@@ -73,7 +73,7 @@ await engine.setCloudAdapter(cloudAdapter);
 
 3. Data Operations:
 
-typescript
+```typescript
 // Save data
 await engine.save('notes', {
 id: '1',
@@ -89,7 +89,7 @@ const result = await engine.query('notes', {
 limit: 10,
 offset: 0
 });
-
+```
 
 ## Synchronization Principles
 
