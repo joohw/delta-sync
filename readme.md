@@ -1,9 +1,9 @@
 # DeltaSync
 
-```
+
 [![npm version](https://img.shields.io/npm/v/delta-sync.svg)](https://www.npmjs.com/package/delta-sync)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-```
+
 
 **A Lightweight Cross-platform Data Synchronization Engine**
 
