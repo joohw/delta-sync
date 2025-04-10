@@ -79,8 +79,8 @@ export interface SyncViewItem {
 
 export interface DataChange<T = any> {
     id: string;
-    data?: T;   //data for put operation
     _ver: number;
+    data?: T;   //data for put operation
 }
 
 

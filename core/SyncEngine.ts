@@ -165,7 +165,6 @@ export class SyncEngine implements ISyncEngine {
         }
         try {
             this.updateStatus(SyncStatus.DOWNLOADING);
-            //Rebuild cloud SyncView to get latest remote state
             await this.cloudCoordinator.rebuildSyncView();
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
@@ -234,6 +233,7 @@ export class SyncEngine implements ISyncEngine {
         }
         try {
             this.updateStatus(SyncStatus.UPLOADING);
+            await this.localCoordinator.rebuildSyncView();
             await this.cloudCoordinator.rebuildSyncView();
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();

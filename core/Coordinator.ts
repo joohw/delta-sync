@@ -179,32 +179,29 @@ export class Coordinator implements ICoordinator {
     try {
       for (const [store, changes] of changeSet.delete) {
         await this.adapter.deleteBulk(store, changes.map(c => c.id));
-        changes.forEach(change => {
-          this.syncView.upsert({
-            id: change.id,
-            store,
-            _ver: change._ver,
-            deleted: true
-          });
-        });
+        const syncViewItems = changes.map(change => ({
+          id: change.id,
+          store,
+          _ver: change._ver,
+          deleted: true
+        }));
+        await this.addTombstones(syncViewItems);
+        this.syncView.upsertBatch(syncViewItems);
       }
       for (const [store, changes] of changeSet.put) {
         await this.adapter.putBulk(store, changes.map(c => c.data as T));
-        changes.forEach(change => {
-          this.syncView.upsert({
-            id: change.id,
-            store,
-            _ver: change._ver
-          });
-        });
+        const syncViewItems = changes.map(change => ({
+          id: change.id,
+          store,
+          _ver: change._ver
+        }));
+        this.syncView.upsertBatch(syncViewItems);
       }
-
     } catch (error) {
       console.error('Failed to apply changes:', error);
       throw error;
     }
   }
-
 
 
 
