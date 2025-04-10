@@ -165,7 +165,8 @@ export class SyncEngine implements ISyncEngine {
         }
         try {
             this.updateStatus(SyncStatus.DOWNLOADING);
-            await this.cloudCoordinator.refreshView();
+            //Rebuild cloud SyncView to get latest remote state
+            await this.cloudCoordinator.rebuildSyncView();
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
             const { toDownload } = SyncView.diffViews(localView, cloudView);
@@ -233,7 +234,7 @@ export class SyncEngine implements ISyncEngine {
         }
         try {
             this.updateStatus(SyncStatus.UPLOADING);
-            await this.cloudCoordinator.refreshView();
+            await this.cloudCoordinator.rebuildSyncView();
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
             const { toUpload } = SyncView.diffViews(localView, cloudView);
@@ -471,29 +472,6 @@ export class SyncEngine implements ISyncEngine {
             throw error;
         }
     }
-
-
-    async countCloudStoreItems(storeName: string): Promise<number> {
-        if (!this.cloudCoordinator) {
-            throw new Error('Cloud adapter not set');
-        }
-        try {
-            await this.cloudCoordinator.refreshView();
-            const cloudView = await this.cloudCoordinator.getCurrentView();
-            let count = 0;
-            const storeItems = cloudView.getByStore(storeName);
-            for (const item of storeItems) {
-                if (!item.deleted) {
-                    count++;
-                }
-            }
-            return count;
-        } catch (error) {
-            throw new Error(`Failed to count items in cloud store ${storeName}: ${error instanceof Error ? error.message : String(error)}`);
-        }
-    }
-
-
 
     // get local coordinator
     getlocalCoordinator(): Coordinator {

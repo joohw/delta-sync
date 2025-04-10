@@ -11,16 +11,12 @@ import {
   SyncQueryResult,
 } from './types';
 
-interface SerializedSyncView {
-  id: string;  
-  items: Array<SyncViewItem>;
-}
 
 export class Coordinator implements ICoordinator {
-  syncView: SyncView;
-  adapter: DatabaseAdapter;
-  private readonly SYNC_VIEW_STORE = 'syncView';
-  private readonly SYNC_VIEW_KEY = 'current_view';
+  public syncView: SyncView;
+  public adapter: DatabaseAdapter;
+  private readonly TOMBSTONE_STORE = 'tombStones';
+  private readonly TOMBSTONE_RETENTION = 180 * 24 * 60 * 60 * 1000; // 180 days
   private initialized: boolean = false;
 
 
@@ -33,15 +29,8 @@ export class Coordinator implements ICoordinator {
   async initSync(): Promise<void> {
     if (this.initialized) return;
     try {
-      const result = await this.adapter.readBulk<SerializedSyncView>(
-        this.SYNC_VIEW_STORE,
-        [this.SYNC_VIEW_KEY]
-      );
-      if (result.length > 0 && result[0]?.items) {
-        this.syncView = SyncView.deserialize(JSON.stringify(result[0].items));
-      } else {
-        await this.rebuildSyncView();
-      }
+      await this.rebuildSyncView();
+      await this.clearOldTombstones();
       this.initialized = true;
     } catch (error) {
       console.error('Failed to initialize sync engine:', error);
@@ -59,7 +48,7 @@ export class Coordinator implements ICoordinator {
 
   async disposeSync(): Promise<void> {
     try {
-      await this.persistView();
+
       this.syncView.clear();
       this.initialized = false;
     } catch (error) {
@@ -71,14 +60,31 @@ export class Coordinator implements ICoordinator {
 
   async getCurrentView(): Promise<SyncView> {
     await this.ensureInitialized();
-    const result = await this.adapter.readBulk<SerializedSyncView>(
-      this.SYNC_VIEW_STORE,
-      [this.SYNC_VIEW_KEY]
-    );
-    if (result.length > 0 && result[0]?.items) {
-      return SyncView.deserialize(JSON.stringify(result[0].items));
+    return this.syncView;
+  }
+
+
+
+  async readAll<T extends { id: string }>(storeName: string): Promise<T[]> {
+    try {
+      let allItems: T[] = [];
+      let offset = 0;
+      const limit = 100;
+      while (true) {
+        const { items, hasMore } = await this.adapter.readStore<T>(
+          storeName,
+          limit,
+          offset
+        );
+        allItems = allItems.concat(items);
+        if (!hasMore) break;
+        offset += limit;
+      }
+      return allItems;
+    } catch (error) {
+      console.error(`Failed to read all data from store ${storeName}:`, error);
+      throw error;
     }
-    return new SyncView(); // Return an empty view
   }
 
 
@@ -115,7 +121,6 @@ export class Coordinator implements ICoordinator {
           _ver: newVersion,
         });
       }
-      await this.persistView();
       return results;
     } catch (error) {
       console.error(`Failed to put bulk data to store ${storeName}:`, error);
@@ -193,7 +198,7 @@ export class Coordinator implements ICoordinator {
           });
         });
       }
-      await this.persistView();
+
     } catch (error) {
       console.error('Failed to apply changes:', error);
       throw error;
@@ -207,21 +212,19 @@ export class Coordinator implements ICoordinator {
   async deleteBulk(
     storeName: string,
     ids: string[],
-    _ver?: number
   ): Promise<void> {
     await this.ensureInitialized();
     try {
       await this.adapter.deleteBulk(storeName, ids);
-      const currentVersion = _ver || Date.now();
-      for (const id of ids) {
-        this.syncView.upsert({
-          id,
-          store: storeName,
-          _ver: currentVersion,
-          deleted: true
-        });
-      }
-      await this.persistView();
+      const currentVersion = Date.now();
+      const tombstones = ids.map(id => ({
+        id,
+        store: storeName,
+        _ver: currentVersion,
+        deleted: true
+      }));
+      await this.addTombstones(tombstones);
+      this.syncView.upsertBatch(tombstones);
     } catch (error) {
       console.error('Failed to delete data:', error);
       throw error;
@@ -237,51 +240,28 @@ export class Coordinator implements ICoordinator {
 
 
 
-  private async rebuildSyncView(): Promise<void> {
+
+  async rebuildSyncView(): Promise<void> {
     try {
       this.syncView.clear();
-      const stores = await this.adapter.getStores();
-      const allStores = stores.filter(store => store !== this.SYNC_VIEW_STORE);
-      for (const store of allStores) {
-        let offset = 0;
-        const limit = 100;
-        while (true) {
-          const { items, hasMore } = await this.adapter.readStore(
-            store,
-            limit,
-            offset
-          );
-          for (const item of items) {
-            if (item?.id) {
-              this.syncView.upsert({
-                id: item.id,
-                store: store,
-                _ver: Date.now(),
-              });
-            }
-          }
-          if (!hasMore) break;
-          offset += limit;
-        }
+      const stores = (await this.adapter.getStores())
+        .filter(store => store !== this.TOMBSTONE_STORE);
+      for (const store of stores) {
+        const items = await this.readAll<{ id: string; _ver?: number }>(store);
+        const itemsToUpsert = items
+          .filter(item => item && item.id)
+          .map(item => ({
+            id: item.id,
+            store: store,
+            _ver: item._ver || Date.now(),
+          }));
+        this.syncView.upsertBatch(itemsToUpsert);
       }
-      await this.persistView();
+      const tombstones = await this.readAll<SyncViewItem>(this.TOMBSTONE_STORE);
+      this.syncView.upsertBatch(tombstones);
     } catch (error) {
       console.error('Failed to rebuild sync view:', error);
       throw error;
-    }
-  }
-
-
-
-  async refreshView(): Promise<void> {
-    const result = await this.adapter.readBulk<SerializedSyncView>(
-      this.SYNC_VIEW_STORE,
-      [this.SYNC_VIEW_KEY]
-    );
-    if (result.length > 0 && result[0]?.items) {
-      this.syncView = SyncView.deserialize(JSON.stringify(result[0].items));
-    } else {
-      this.syncView = new SyncView();
     }
   }
 
@@ -299,7 +279,6 @@ export class Coordinator implements ICoordinator {
         limit,
         offset
       );
-
       if (since > 0) {
         const filteredItems = result.items.filter(item => {
           const viewItem = this.syncView.get(storeName, item.id);
@@ -319,21 +298,30 @@ export class Coordinator implements ICoordinator {
 
 
 
-  private async persistView(): Promise<void> {
+  private async clearOldTombstones(): Promise<void> {
     try {
-      const serializedView: SerializedSyncView = {
-        id: this.SYNC_VIEW_KEY,
-        items: JSON.parse(this.syncView.serialize())
-      };
-      await this.adapter.putBulk(
-        this.SYNC_VIEW_STORE,
-        [serializedView]
+      const { items } = await this.adapter.readStore<SyncViewItem>(this.TOMBSTONE_STORE);
+      const now = Date.now();
+      const expiredTombstones = items.filter(item =>
+        item._ver < (now - this.TOMBSTONE_RETENTION)
       );
+      if (expiredTombstones.length > 0) {
+        const expiredIds = expiredTombstones.map(item => item.id);
+        await this.adapter.deleteBulk(this.TOMBSTONE_STORE, expiredIds);
+        expiredTombstones.forEach(item => {
+          this.syncView.delete(item.store, item.id);
+        });
+      }
     } catch (error) {
-      console.error('Failed to persist view:', error);
-      throw error;
+      console.error('Failed to clear old tombstones:', error);
     }
   }
+
+
+  private async addTombstones(items: SyncViewItem[]): Promise<void> {
+    await this.adapter.putBulk(this.TOMBSTONE_STORE, items);
+  }
+
 
 
 }
