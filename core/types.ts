@@ -7,6 +7,7 @@ export interface SyncQueryOptions {
     since?: number;      // Query data after specified _ver
     limit?: number;      // Limit number of returned items
     offset?: number;     // Starting position
+    includeDeleted?: boolean; // Whether to include deleted items
 }
 
 
@@ -14,6 +15,7 @@ export interface SyncQueryResult<T = any> {
     items: T[];
     hasMore: boolean;
 }
+
 
 
 export interface SyncProgress {
@@ -75,6 +77,13 @@ export interface SyncViewItem {
     deleted?: boolean;      // markd as deleted
     isAttachment?: boolean; // markd as attachment
 }
+
+export interface DeletedItem extends Record<string, any> {
+    id: string;
+    _ver: number;
+    deleted: boolean;
+}
+
 
 
 export interface DataChange<T = any> {
@@ -165,7 +174,6 @@ export class SyncView {
         }
         return { toDownload, toUpload };
     }
-
     // Generate composite key
     private getKey(store: string, id: string): string {
         return `${store}:${id}`;
@@ -189,16 +197,23 @@ export class SyncView {
         this.items.clear();
         this.storeIndex.clear();
     }
-    // Serialize view data (for persistence)
-    serialize(): string {
-        return JSON.stringify(Array.from(this.items.values()));
-    }
-    // Deserialize from data (for persistence)
-    static deserialize(data: string): SyncView {
-        const view = new SyncView();
-        const items = JSON.parse(data) as SyncViewItem[];
-        view.upsertBatch(items);
-        return view;
+    countByStore(store: string, includeDeleted: boolean = false): number {
+        const storeItems = this.storeIndex.get(store);
+        if (!storeItems) {
+            return 0;
+        }
+        if (includeDeleted) {
+            return storeItems.size;
+        } else {
+            let activeCount = 0;
+            for (const id of storeItems) {
+                const item = this.get(store, id);
+                if (item && !item.deleted) {
+                    activeCount++;
+                }
+            }
+            return activeCount;
+        }
     }
 }
 

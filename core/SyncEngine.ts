@@ -165,7 +165,6 @@ export class SyncEngine implements ISyncEngine {
         }
         try {
             this.updateStatus(SyncStatus.DOWNLOADING);
-            await this.cloudCoordinator.rebuildSyncView();
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
             const { toDownload } = SyncView.diffViews(localView, cloudView);
@@ -363,6 +362,7 @@ export class SyncEngine implements ISyncEngine {
                 if (this.canTriggerSync()) {
                     await this.push();
                 } else {
+                    console.warn('[SyncEngine] Sync skipped caused by checking process')
                 }
             } catch (error) {
                 console.error('[SyncEngine] Scheduled push failed:', error);

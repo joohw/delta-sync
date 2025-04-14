@@ -35,26 +35,23 @@ describe('Coordinator Tests', () => {
                 { id: 'test1', content: 'test content 1' },
                 { id: 'test2', content: 'test content 2' }
             ]
-
             // Test Write
             const savedData = await coordinator.putBulk(TEST_STORE, testData)
             expect(savedData).toHaveLength(testData.length)
-
             // Test Read
             const readData = await coordinator.readBulk<TestData>(TEST_STORE, [testData[0].id])
             expect(readData[0]).toBeDefined()
             expect(readData[0].id).toBe(testData[0].id)
-
             // Test Delete
             await coordinator.deleteBulk(TEST_STORE, [testData[0].id])
             const afterDelete = await coordinator.readBulk(TEST_STORE, [testData[0].id])
             expect(afterDelete).toHaveLength(0)
         })
+
     })
 
     describe('Query Operations', () => {
         const QUERY_STORE = 'query_test'
-
         it('should handle queries with pagination', async () => {
             // Clean up test data
             const currentView = await coordinator.getCurrentView()
@@ -62,7 +59,6 @@ describe('Coordinator Tests', () => {
                 QUERY_STORE,
                 currentView.getByStore(QUERY_STORE).map(item => item.id)
             )
-
             // Insert test data
             const testItems: TestData[] = Array.from({ length: 10 }, (_, i) => ({
                 id: `query-test-${i}`,
@@ -70,11 +66,9 @@ describe('Coordinator Tests', () => {
                 timestamp: Date.now() + i
             }))
             await coordinator.putBulk(QUERY_STORE, testItems)
-
             // Test basic query
             const result = await coordinator.query<TestData>(QUERY_STORE, { limit: 5 })
             expect(result.items).toHaveLength(5)
-
             // Test pagination
             const pageResult = await coordinator.query<TestData>(QUERY_STORE, {
                 offset: 3,
