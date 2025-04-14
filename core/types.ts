@@ -7,7 +7,7 @@ export interface SyncQueryOptions {
     since?: number;      // Query data after specified _ver
     limit?: number;      // Limit number of returned items
     offset?: number;     // Starting position
-    includeDeleted?: boolean; // Whether to include deleted items
+    includeDeleted?: boolean;
 }
 
 

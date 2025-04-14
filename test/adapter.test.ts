@@ -1,4 +1,5 @@
 // tests/adapter.test.ts
+
 import { describe, it, expect, beforeEach } from 'vitest'
 import { DatabaseAdapter } from '../core/types'
 import { MemoryAdapter } from '../core/adapters'

@@ -1,4 +1,5 @@
 // tests/coordinator.test.ts
+
 import { describe, it, expect, beforeEach } from 'vitest'
 import { ICoordinator, SyncView } from '../core/types'
 import { MemoryAdapter } from '../core/adapters'
