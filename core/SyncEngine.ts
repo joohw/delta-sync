@@ -168,6 +168,7 @@ export class SyncEngine implements ISyncEngine {
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
             const { toDownload } = SyncView.diffViews(localView, cloudView);
+            console.log('[SyncEngine] Pulling changes:',localView, cloudView, toDownload);
             if (toDownload.length === 0) {
                 this.updateStatus(SyncStatus.IDLE);
                 return {
@@ -476,6 +477,11 @@ export class SyncEngine implements ISyncEngine {
     // get local coordinator
     getlocalCoordinator(): Coordinator {
         return this.localCoordinator;
+    }
+
+
+    getCloudCoordinator(): Coordinator | undefined {
+        return this.cloudCoordinator;
     }
 
     // get local adapter

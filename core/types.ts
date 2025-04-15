@@ -146,29 +146,29 @@ export class SyncView {
     } {
         const toDownload: SyncViewItem[] = [];
         const toUpload: SyncViewItem[] = [];
-        const localKeys = new Set(local.items.keys());
-        const remoteKeys = new Set(remote.items.keys());
-        // Keys only in local (need to upload)
-        for (const key of localKeys) {
-            if (!remoteKeys.has(key)) {
-                toUpload.push(local.items.get(key)!);
-            }
-        }
-        // Keys only in remote (need to download)
-        for (const key of remoteKeys) {
-            if (!localKeys.has(key)) {
-                toDownload.push(remote.items.get(key)!);
-            }
-        }
-        // Keys in both (need version comparison)
-        for (const key of localKeys) {
-            if (remoteKeys.has(key)) {
-                const localItem = local.items.get(key)!;
-                const remoteItem = remote.items.get(key)!;
-                if (localItem._ver > remoteItem._ver) {
-                    toUpload.push(localItem);
-                } else if (localItem._ver < remoteItem._ver) {
-                    toDownload.push(remoteItem);
+        const allKeys = new Set([...local.items.keys(), ...remote.items.keys()]);
+    
+        for (const key of allKeys) {
+            const localItem = local.items.get(key);
+            const remoteItem = remote.items.get(key);
+
+            if (!localItem && remoteItem) {
+                // 本地没有，远程有
+                toDownload.push(remoteItem);
+            } else if (localItem && !remoteItem) {
+                // 本地有，远程没有
+                toUpload.push(localItem);
+            } else if (localItem && remoteItem) {
+                // 两边都有，需要比较版本和删除状态
+                if (localItem._ver !== remoteItem._ver || localItem.deleted !== remoteItem.deleted) {
+                    if (localItem._ver > remoteItem._ver) {
+                        toUpload.push(localItem);
+                    } else if (localItem._ver < remoteItem._ver) {
+                        toDownload.push(remoteItem);
+                    } else {
+                        // 版本相同但删除状态不同时，以远程为准
+                        toDownload.push(remoteItem);
+                    }
                 }
             }
         }
@@ -297,9 +297,10 @@ export interface ISyncEngine {
     ): Promise<SyncQueryResult<T>>;
     clearCloudStores(strings: string | string[]): Promise<void>;
     clearLocalStores(strings: string | string[]): Promise<void>;
-    getlocalCoordinator(): ICoordinator;
     getlocalAdapter(): DatabaseAdapter;
-    getCloudAdapter(): DatabaseAdapter | undefined;
+    getlocalCoordinator(): ICoordinator;
+    getCloudAdapter(): DatabaseAdapter|undefined;
+    getCloudCoordinator(): ICoordinator|undefined;
     dispose(): void;
     disconnectCloud(): void;
 }

@@ -4,7 +4,6 @@ import {
   ICoordinator,
   DatabaseAdapter,
   SyncView,
-  DeletedItem,
   DataChange,
   DataChangeSet,
   SyncViewItem,
@@ -16,6 +15,8 @@ import {
 export class Coordinator implements ICoordinator {
   public syncView: SyncView;
   public adapter: DatabaseAdapter;
+  private readonly TOMBSTONE_STORE = 'tombStones';
+  private readonly TOMBSTONE_RETENTION = 180 * 24 * 60 * 60 * 1000; // 180 days
   private initialized: boolean = false;
 
 
@@ -29,7 +30,7 @@ export class Coordinator implements ICoordinator {
     if (this.initialized) return;
     try {
       await this.rebuildSyncView();
-      //await this.cleanupDeletedItems();
+      await this.clearOldTombstones();
       this.initialized = true;
     } catch (error) {
       console.error('Failed to initialize sync engine:', error);
@@ -92,14 +93,13 @@ export class Coordinator implements ICoordinator {
     ids: string[]
   ): Promise<T[]> {
     try {
-      const results = await this.adapter.readBulk<T & { deleted?: boolean }>(storeName, ids);
-      return results.filter(item => !item.deleted) as T[];
+      return await this.adapter.readBulk<T>(storeName, ids);
     } catch (error) {
       console.error(`Failed to read bulk data from store ${storeName}:`, error);
       throw error;
     }
   }
-  
+
 
   // Data put to the adapter will be tagged with a new version number.
   async putBulk<T extends { id: string }>(
@@ -119,7 +119,6 @@ export class Coordinator implements ICoordinator {
           id: item.id,
           store: storeName,
           _ver: newVersion,
-          deleted: !!(item as any).deleted
         });
       }
       return results;
@@ -129,35 +128,6 @@ export class Coordinator implements ICoordinator {
     }
   }
 
-
-
-  async deleteBulk(
-    storeName: string,
-    ids: string[],
-  ): Promise<void> {
-    await this.ensureInitialized();
-    try {
-      const currentVersion = Date.now();
-      const deletedItems = ids.map(id => ({
-        id: id,
-        _ver: currentVersion,
-        deleted: true
-      }));
-      if (deletedItems.length > 0) {
-        await this.adapter.putBulk(storeName, deletedItems);
-      }
-      const syncViewItems = ids.map(id => ({
-        id,
-        store: storeName,
-        _ver: currentVersion,
-        deleted: true
-      }));
-      this.syncView.upsertBatch(syncViewItems);
-    } catch (error) {
-      console.error('Failed to mark data as deleted:', error);
-      throw error;
-    }
-  }
 
 
 
@@ -202,41 +172,30 @@ export class Coordinator implements ICoordinator {
 
 
 
-  async applyChanges<T extends { id: string }>(
-    changeSet: DataChangeSet
+
+
+  async deleteBulk(
+    storeName: string,
+    ids: string[],
   ): Promise<void> {
     await this.ensureInitialized();
     try {
-      for (const [store, changes] of changeSet.delete) {
-        const itemsToUpdate = changes.map(change => ({
-          id: change.id,
-          _ver: change._ver,
-          deleted: true
-        }));
-        await this.adapter.putBulk(store, itemsToUpdate as any);
-        const syncViewItems = changes.map(change => ({
-          id: change.id,
-          store,
-          _ver: change._ver,
-          deleted: true
-        }));
-        this.syncView.upsertBatch(syncViewItems);
-      }
-      for (const [store, changes] of changeSet.put) {
-        await this.adapter.putBulk(store, changes.map(c => c.data as T));
-        const syncViewItems = changes.map(change => ({
-          id: change.id,
-          store,
-          _ver: change._ver,
-          deleted: false
-        }));
-        this.syncView.upsertBatch(syncViewItems);
-      }
+      await this.adapter.deleteBulk(storeName, ids);
+      const currentVersion = Date.now();
+      const tombstones = ids.map(id => ({
+        id,
+        store: storeName,
+        _ver: currentVersion,
+        deleted: true
+      }));
+      await this.addTombstones(tombstones);
+      this.syncView.upsertBatch(tombstones);
     } catch (error) {
-      console.error('Failed to apply changes:', error);
+      console.error('Failed to delete data:', error);
       throw error;
     }
   }
+
 
 
   async getAdapter(): Promise<DatabaseAdapter> {
@@ -245,22 +204,26 @@ export class Coordinator implements ICoordinator {
   }
 
 
+
+
   async rebuildSyncView(): Promise<void> {
     try {
       this.syncView.clear();
-      const stores = await this.adapter.getStores();
+      const stores = (await this.adapter.getStores())
+        .filter(store => store !== this.TOMBSTONE_STORE);
       for (const store of stores) {
-        const items = await this.readAll<{ id: string; _ver?: number; deleted?: boolean }>(store);
+        const items = await this.readAll<{ id: string; _ver?: number }>(store);
         const itemsToUpsert = items
           .filter(item => item && item.id)
           .map(item => ({
             id: item.id,
             store: store,
             _ver: item._ver || Date.now(),
-            deleted: !!item.deleted
           }));
         this.syncView.upsertBatch(itemsToUpsert);
       }
+      const tombstones = await this.readAll<SyncViewItem>(this.TOMBSTONE_STORE);
+      this.syncView.upsertBatch(tombstones);
     } catch (error) {
       console.error('Failed to rebuild sync view:', error);
       throw error;
@@ -274,27 +237,24 @@ export class Coordinator implements ICoordinator {
     options: SyncQueryOptions = {}
   ): Promise<SyncQueryResult<T>> {
     await this.ensureInitialized();
-    const { since = 0, offset = 0, limit = 100, includeDeleted = false } = options;
+    const { since = 0, offset = 0, limit = 100 } = options;
     try {
       const result = await this.adapter.readStore<T>(
         storeName,
         limit,
         offset
       );
-      let filteredItems = result.items;
-      if (!includeDeleted) {
-        filteredItems = filteredItems.filter(item => !(item as any).deleted);
-      }
       if (since > 0) {
-        filteredItems = filteredItems.filter(item => {
+        const filteredItems = result.items.filter(item => {
           const viewItem = this.syncView.get(storeName, item.id);
           return viewItem && viewItem._ver > since;
         });
+        return {
+          items: filteredItems,
+          hasMore: result.hasMore
+        };
       }
-      return {
-        items: filteredItems,
-        hasMore: result.hasMore
-      };
+      return result;
     } catch (error) {
       console.error(`Query failed for store ${storeName}:`, error);
       throw error;
@@ -302,36 +262,92 @@ export class Coordinator implements ICoordinator {
   }
 
 
-
-  async cleanupDeletedItems(): Promise<void> {
+  // core methods for applying changes
+  async applyChanges<T extends { id: string }>(
+    changeSet: DataChangeSet
+  ): Promise<void> {
+    await this.ensureInitialized();
     try {
-      const retentionPeriod = 180 * 24 * 60 * 60 * 1000;
-      const cutoffTime = Date.now() - retentionPeriod;
-      const stores = await this.adapter.getStores();
-      for (const store of stores) {
-        const { items } = await this.adapter.readStore<DeletedItem>(store);
-        const oldDeletedItems = items.filter(
-          item => item.deleted && item._ver < cutoffTime
-        );
-        if (oldDeletedItems.length > 0) {
-          await this.adapter.deleteBulk(
-            store,
-            oldDeletedItems.map(item => item.id)
-          );
-          for (const item of oldDeletedItems) {
-            this.syncView.delete(store, item.id);
-          }
-        }
+      for (const [store, changes] of changeSet.put) {
+        await this.removeRelatedTombstones(store, changes.map(c => c.id));
+        await this.adapter.putBulk(store, changes.map(c => c.data as T));
+        const syncViewItems = changes.map(change => ({
+          id: change.id,
+          store,
+          _ver: change._ver,
+          deleted: false
+        }));
+        this.syncView.upsertBatch(syncViewItems);
+      }
+      for (const [store, changes] of changeSet.delete) {
+        await this.adapter.deleteBulk(store, changes.map(c => c.id));
+        const syncViewItems = changes.map(change => ({
+          id: change.id,
+          store,
+          _ver: change._ver,
+          deleted: true
+        }));
+        await this.addTombstones(syncViewItems);
+        this.syncView.upsertBatch(syncViewItems);
       }
     } catch (error) {
-      console.error('Failed to clean up old deleted items:', error);
+      console.error('Failed to apply changes:', error);
+      throw error;
     }
   }
 
+
   async count(storeName: string, includeDeleted: boolean = false): Promise<number> {
     await this.ensureInitialized();
-    return this.syncView.countByStore(storeName, includeDeleted);
+    try {
+      return this.syncView.countByStore(storeName, includeDeleted);
+    } catch (error) {
+      console.error(`Failed to count items in store ${storeName}:`, error);
+      throw error;
+    }
   }
+
+
+  private async removeRelatedTombstones(store: string, ids: string[]): Promise<void> {
+    const tombstoneIds = ids.filter(id => {
+      const item = this.syncView.get(store, id);
+      return item && item.deleted;
+    });
+    if (tombstoneIds.length > 0) {
+      try {
+        await this.adapter.deleteBulk(this.TOMBSTONE_STORE, tombstoneIds);
+        console.log(`Removed ${tombstoneIds.length} tombstones for resurrected items`);
+      } catch (error) {
+        console.error(`Failed to remove tombstones for ${store}:`, error);
+      }
+    }
+  }
+
+
+  private async clearOldTombstones(): Promise<void> {
+    try {
+      const { items } = await this.adapter.readStore<SyncViewItem>(this.TOMBSTONE_STORE);
+      const now = Date.now();
+      const expiredTombstones = items.filter(item =>
+        item._ver < (now - this.TOMBSTONE_RETENTION)
+      );
+      if (expiredTombstones.length > 0) {
+        const expiredIds = expiredTombstones.map(item => item.id);
+        await this.adapter.deleteBulk(this.TOMBSTONE_STORE, expiredIds);
+        expiredTombstones.forEach(item => {
+          this.syncView.delete(item.store, item.id);
+        });
+      }
+    } catch (error) {
+      console.error('Failed to clear old tombstones:', error);
+    }
+  }
+
+
+  private async addTombstones(items: SyncViewItem[]): Promise<void> {
+    await this.adapter.putBulk(this.TOMBSTONE_STORE, items);
+  }
+
 
 
 }
