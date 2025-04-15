@@ -21,7 +21,7 @@ export class SyncEngine implements ISyncEngine {
     private options: SyncOptions;
     private syncStatus: SyncStatus = SyncStatus.OFFLINE;
     private isInitialized: boolean = false;
-    private pullTimer?: ReturnType<typeof setInterval>; 
+    private pullTimer?: ReturnType<typeof setInterval>;
     private pushDebounceTimer?: ReturnType<typeof setTimeout>;
 
 
@@ -40,7 +40,7 @@ export class SyncEngine implements ISyncEngine {
                 enabled: false,
                 pullInterval: 60000,
                 pushDebounce: 10000,
-                retryDelay: 3000, 
+                retryDelay: 3000,
                 ...options.autoSync
             },
             maxRetries: 3,
@@ -165,10 +165,12 @@ export class SyncEngine implements ISyncEngine {
         }
         try {
             this.updateStatus(SyncStatus.DOWNLOADING);
+            //await this.localCoordinator.rebuildSyncView();
+            await this.cloudCoordinator.rebuildSyncView();
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
             const { toDownload } = SyncView.diffViews(localView, cloudView);
-            console.log('[SyncEngine] Pulling changes:',localView, cloudView, toDownload);
+            console.log('[SyncEngine] Pulling changes:', localView, cloudView, toDownload);
             if (toDownload.length === 0) {
                 this.updateStatus(SyncStatus.IDLE);
                 return {
@@ -233,8 +235,8 @@ export class SyncEngine implements ISyncEngine {
         }
         try {
             this.updateStatus(SyncStatus.UPLOADING);
-            await this.localCoordinator.rebuildSyncView();
-            await this.cloudCoordinator.rebuildSyncView();
+            //await this.localCoordinator.rebuildSyncView();
+            // await this.cloudCoordinator.rebuildSyncView(); 
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
             const { toUpload } = SyncView.diffViews(localView, cloudView);
@@ -310,7 +312,7 @@ export class SyncEngine implements ISyncEngine {
             enabled: true,
             pullInterval: pullInterval || currentAutoSync.pullInterval || 30000000
         };
-            this.options.autoSync.pullInterval;
+        this.options.autoSync.pullInterval;
         this.pullTimer = setInterval(() => {
             this.executePullTask();
         }, this.options.autoSync.pullInterval);
@@ -384,7 +386,7 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
-    
+
     updateSyncOptions(options: Partial<SyncOptions>): SyncOptions {
         this.options = this.mergeDefaultOptions({
             ...this.options,
