@@ -31,6 +31,7 @@ export class SyncEngine implements ISyncEngine {
     ) {
         this.localCoordinator = new Coordinator(localAdapter);
         this.options = this.mergeDefaultOptions(options);
+        console.log('Powered by Delta Sync 0.1.5');
     }
 
 
@@ -170,7 +171,6 @@ export class SyncEngine implements ISyncEngine {
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
             const { toDownload } = SyncView.diffViews(localView, cloudView);
-            console.log('[SyncEngine] Pulling changes:', localView, cloudView, toDownload);
             if (toDownload.length === 0) {
                 this.updateStatus(SyncStatus.IDLE);
                 return {
