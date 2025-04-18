@@ -62,6 +62,7 @@ export class SyncEngine implements ISyncEngine {
             }
             this.isInitialized = true;
         } catch (error) {
+            console.error('初始化同步引擎失败:', error);
             throw error;
         }
     }
@@ -165,6 +166,7 @@ export class SyncEngine implements ISyncEngine {
         }
         try {
             this.updateStatus(SyncStatus.DOWNLOADING);
+            await this.localCoordinator.rebuildSyncView();
             await this.cloudCoordinator.rebuildSyncView();
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
@@ -177,56 +179,43 @@ export class SyncEngine implements ISyncEngine {
                     stats: { uploaded: 0, downloaded: 0, errors: 0 }
                 };
             }
-            // 分批处理逻辑
             const batchSize = this.options.batchSize || 100;
-            let totalDownloaded = 0;
-            let errors = 0;
-            // 按批次处理
+            let downloadedCount = 0;
+            let latestVersion = 0;
             for (let i = 0; i < toDownload.length; i += batchSize) {
-                const currentBatch = toDownload.slice(i, i + batchSize);
-                try {
-                    const batchChangeSet = await this.cloudCoordinator.extractChanges(currentBatch);
-                    let batchItemCount = 0;
-                    for (const itemChanges of batchChangeSet.put.values()) {
-                        batchItemCount += itemChanges.length;
-                    }
-                    for (const itemChanges of batchChangeSet.delete.values()) {
-                        batchItemCount += itemChanges.length;
-                    }
-                    await this.localCoordinator.applyChanges(batchChangeSet);
-                    totalDownloaded += batchItemCount;
-                    
-                    if (this.options.onSyncProgress) {
-                        this.options.onSyncProgress({
-                            processed: i + currentBatch.length,
-                            total: toDownload.length,
-                        });
-                    }
-                } catch (error) {
-                    console.error(`Error processing batch ${i / batchSize + 1}:`, error);
-                    errors++;
+                const batch = toDownload.slice(i, i + batchSize);
+                const batchChangeSet = await this.cloudCoordinator.extractChanges(batch);
+                for (const itemChanges of batchChangeSet.put.values()) {
+                    downloadedCount += itemChanges.length;
                 }
-            }
-            
-            // 更新可能的最新版本
-            if (toDownload.length > 0) {
-                const latestVersion = Math.max(...toDownload.map(item => item._ver));
-                if (latestVersion && this.options.onVersionUpdate) {
-                    this.options.onVersionUpdate(latestVersion);
+                for (const itemChanges of batchChangeSet.delete.values()) {
+                    downloadedCount += itemChanges.length;
                 }
+                const batchLatestVersion = Math.max(...batch.map(item => item._ver || 0));
+                latestVersion = Math.max(latestVersion, batchLatestVersion);
+                await this.localCoordinator.applyChanges(batchChangeSet);
+                this.options.onChangePulled?.(batchChangeSet);
+                this.options.onSyncProgress?.({
+                    processed: i + batch.length,
+                    total: toDownload.length,
+                });
             }
-            
-            this.options.onChangePulled?.({ delete: new Map(), put: new Map() });
+            // Update version if needed
+            if (latestVersion && this.options.onVersionUpdate) {
+                this.options.onVersionUpdate(latestVersion);
+            }
+
             this.updateStatus(SyncStatus.IDLE);
             return {
-                success: errors === 0,
+                success: true,
                 syncedAt: Date.now(),
                 stats: {
                     uploaded: 0,
-                    downloaded: totalDownloaded,
-                    errors
+                    downloaded: downloadedCount,
+                    errors: 0
                 }
             };
+
         } catch (error) {
             this.updateStatus(SyncStatus.ERROR);
             console.error('[SyncEngine] Pull failed:', error);
@@ -259,55 +248,52 @@ export class SyncEngine implements ISyncEngine {
         }
         try {
             this.updateStatus(SyncStatus.UPLOADING);
+            await this.localCoordinator.rebuildSyncView();
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
             const { toUpload } = SyncView.diffViews(localView, cloudView);
             if (toUpload.length === 0) {
                 this.updateStatus(SyncStatus.IDLE);
-                return { success: true, syncedAt: Date.now(), stats: { uploaded: 0, downloaded: 0, errors: 0 } };
+                return {
+                    success: true,
+                    syncedAt: Date.now(),
+                    stats: { uploaded: 0, downloaded: 0, errors: 0 }
+                };
             }
-            
-            // 分批处理逻辑
             const batchSize = this.options.batchSize || 100;
             let uploadedCount = 0;
-            let errorsCount = 0;
+            let latestVersion = 0;
             
             for (let i = 0; i < toUpload.length; i += batchSize) {
-                try {
-                    const batchItems = toUpload.slice(i, i + batchSize);
-                    const batchChangeSet = await this.localCoordinator.extractChanges(batchItems);
-                    let batchUploadCount = 0;
-                    for (const itemChanges of batchChangeSet.put.values()) {
-                        batchUploadCount += itemChanges.length;
-                    }
-                    for (const itemChanges of batchChangeSet.delete.values()) {
-                        batchUploadCount += itemChanges.length;
-                    }
-                    await this.cloudCoordinator.applyChanges(batchChangeSet);
-                    uploadedCount += batchUploadCount;
-                } catch (error) {
-                    console.error('[SyncEngine] Error processing batch:', error);
-                    errorsCount++;
+                const batch = toUpload.slice(i, i + batchSize);
+                const batchChangeSet = await this.localCoordinator.extractChanges(batch);
+                for (const itemChanges of batchChangeSet.put.values()) {
+                    uploadedCount += itemChanges.length;
                 }
-            }
-            
-            // 版本更新处理
-            if (toUpload.length > 0) {
-                const latestVersion = Math.max(...toUpload.map(item => item._ver));
-                if (latestVersion && this.options.onVersionUpdate) {
-                    this.options.onVersionUpdate(latestVersion);
+                for (const itemChanges of batchChangeSet.delete.values()) {
+                    uploadedCount += itemChanges.length;
                 }
+                const batchLatestVersion = Math.max(...batch.map(item => item._ver || 0));
+                latestVersion = Math.max(latestVersion, batchLatestVersion);
+                await this.cloudCoordinator.applyChanges(batchChangeSet);
+                this.options.onChangePushed?.(batchChangeSet);
+                this.options.onSyncProgress?.({
+                    processed: i + batch.length,
+                    total: toUpload.length,
+                });
             }
-            
-            this.options.onChangePushed?.({ delete: new Map(), put: new Map() });
+            if (latestVersion && this.options.onVersionUpdate) {
+                this.options.onVersionUpdate(latestVersion);
+            }
+
             this.updateStatus(SyncStatus.IDLE);
             return {
-                success: errorsCount === 0,
+                success: true,
                 syncedAt: Date.now(),
                 stats: {
                     uploaded: uploadedCount,
                     downloaded: 0,
-                    errors: errorsCount
+                    errors: 0
                 }
             };
         } catch (error) {
@@ -320,6 +306,8 @@ export class SyncEngine implements ISyncEngine {
             };
         }
     }
+
+
 
 
     async query<T extends { id: string }>(
@@ -337,6 +325,7 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
+
     enableAutoSync(pullInterval?: number): void {
         if (this.pullTimer) {
             clearInterval(this.pullTimer);
@@ -352,6 +341,7 @@ export class SyncEngine implements ISyncEngine {
             this.executePullTask();
         }, this.options.autoSync.pullInterval);
     }
+
 
 
     disableAutoSync(): void {

@@ -56,10 +56,10 @@ export interface SyncOptions {
         retryDelay?: number;
     };
     onStatusUpdate?: (status: SyncStatus) => void;
+    onSyncProgress?: (progress: SyncProgress) => void;
     onVersionUpdate?: (_ver: number) => void;
     onChangePushed?: (changes: DataChangeSet) => void;
     onChangePulled?: (changes: DataChangeSet) => void;
-    onSyncProgress?: (progress: SyncProgress) => void;
     onPullAvailableCheck?: () => boolean;   // pull availability check function
     onPushAvailableCheck?: () => boolean;   // push availability check function
     maxRetries?: number;    // maximum retry count
