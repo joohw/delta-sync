@@ -166,7 +166,6 @@ export class SyncEngine implements ISyncEngine {
         }
         try {
             this.updateStatus(SyncStatus.DOWNLOADING);
-            //await this.localCoordinator.rebuildSyncView();
             await this.cloudCoordinator.rebuildSyncView();
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
@@ -179,28 +178,54 @@ export class SyncEngine implements ISyncEngine {
                     stats: { uploaded: 0, downloaded: 0, errors: 0 }
                 };
             }
-            const changeSet = await this.cloudCoordinator.extractChanges(toDownload);
-            let downloadedCount = 0;
-            for (const itemChanges of changeSet.put.values()) {
-                downloadedCount += itemChanges.length;
+            // 分批处理逻辑
+            const batchSize = this.options.batchSize || 100;
+            let totalDownloaded = 0;
+            let errors = 0;
+            // 按批次处理
+            for (let i = 0; i < toDownload.length; i += batchSize) {
+                const currentBatch = toDownload.slice(i, i + batchSize);
+                try {
+                    const batchChangeSet = await this.cloudCoordinator.extractChanges(currentBatch);
+                    let batchItemCount = 0;
+                    for (const itemChanges of batchChangeSet.put.values()) {
+                        batchItemCount += itemChanges.length;
+                    }
+                    for (const itemChanges of batchChangeSet.delete.values()) {
+                        batchItemCount += itemChanges.length;
+                    }
+                    await this.localCoordinator.applyChanges(batchChangeSet);
+                    totalDownloaded += batchItemCount;
+                    
+                    if (this.options.onSyncProgress) {
+                        this.options.onSyncProgress({
+                            processed: i + currentBatch.length,
+                            total: toDownload.length,
+                        });
+                    }
+                } catch (error) {
+                    console.error(`Error processing batch ${i / batchSize + 1}:`, error);
+                    errors++;
+                }
             }
-            for (const itemChanges of changeSet.delete.values()) {
-                downloadedCount += itemChanges.length;
+            
+            // 更新可能的最新版本
+            if (toDownload.length > 0) {
+                const latestVersion = Math.max(...toDownload.map(item => item._ver));
+                if (latestVersion && this.options.onVersionUpdate) {
+                    this.options.onVersionUpdate(latestVersion);
+                }
             }
-            const latestVersion = Math.max(...toDownload.map(item => item._ver));
-            if (latestVersion && this.options.onVersionUpdate) {
-                this.options.onVersionUpdate(latestVersion);
-            }
-            await this.localCoordinator.applyChanges(changeSet);
-            this.options.onChangePulled?.(changeSet);
+            
+            this.options.onChangePulled?.({ delete: new Map(), put: new Map() });
             this.updateStatus(SyncStatus.IDLE);
             return {
-                success: true,
+                success: errors === 0,
                 syncedAt: Date.now(),
                 stats: {
                     uploaded: 0,
-                    downloaded: downloadedCount,
-                    errors: 0
+                    downloaded: totalDownloaded,
+                    errors
                 }
             };
         } catch (error) {
@@ -235,41 +260,56 @@ export class SyncEngine implements ISyncEngine {
         }
         try {
             this.updateStatus(SyncStatus.UPLOADING);
-            //await this.localCoordinator.rebuildSyncView();
-            // await this.cloudCoordinator.rebuildSyncView(); 
             const localView = await this.localCoordinator.getCurrentView();
             const cloudView = await this.cloudCoordinator.getCurrentView();
             const { toUpload } = SyncView.diffViews(localView, cloudView);
             if (toUpload.length === 0) {
                 this.updateStatus(SyncStatus.IDLE);
-                return {
-                    success: true,
-                    syncedAt: Date.now(),
-                    stats: { uploaded: 0, downloaded: 0, errors: 0 }
-                };
+                return { success: true, syncedAt: Date.now(), stats: { uploaded: 0, downloaded: 0, errors: 0 } };
             }
-            const changeSet = await this.localCoordinator.extractChanges(toUpload);
+            
+            // 分批处理逻辑
+            const batchSize = this.options.batchSize || 100;
             let uploadedCount = 0;
-            for (const itemChanges of changeSet.put.values()) {
-                uploadedCount += itemChanges.length;
+            let errorsCount = 0;
+            
+            for (let i = 0; i < toUpload.length; i += batchSize) {
+                try {
+                    const batchItems = toUpload.slice(i, i + batchSize);
+                    console.log(`处理上传批次 ${Math.floor(i / batchSize) + 1}/${Math.ceil(toUpload.length / batchSize)}`);
+                    const batchChangeSet = await this.localCoordinator.extractChanges(batchItems);
+                    let batchUploadCount = 0;
+                    for (const itemChanges of batchChangeSet.put.values()) {
+                        batchUploadCount += itemChanges.length;
+                    }
+                    for (const itemChanges of batchChangeSet.delete.values()) {
+                        batchUploadCount += itemChanges.length;
+                    }
+                    await this.cloudCoordinator.applyChanges(batchChangeSet);
+                    uploadedCount += batchUploadCount;
+                } catch (error) {
+                    console.error('[SyncEngine] Error processing batch:', error);
+                    errorsCount++;
+                }
             }
-            for (const itemChanges of changeSet.delete.values()) {
-                uploadedCount += itemChanges.length;
+            
+            // 版本更新处理
+            if (toUpload.length > 0) {
+                const latestVersion = Math.max(...toUpload.map(item => item._ver));
+                if (latestVersion && this.options.onVersionUpdate) {
+                    this.options.onVersionUpdate(latestVersion);
+                }
             }
-            await this.cloudCoordinator.applyChanges(changeSet);
-            const latestVersion = Math.max(...toUpload.map(item => item._ver));
-            if (latestVersion && this.options.onVersionUpdate) {
-                this.options.onVersionUpdate(latestVersion);
-            }
-            this.options.onChangePushed?.(changeSet);
+            
+            this.options.onChangePushed?.({ delete: new Map(), put: new Map() });
             this.updateStatus(SyncStatus.IDLE);
             return {
-                success: true,
+                success: errorsCount === 0,
                 syncedAt: Date.now(),
                 stats: {
                     uploaded: uploadedCount,
                     downloaded: 0,
-                    errors: 0
+                    errors: errorsCount
                 }
             };
         } catch (error) {
@@ -282,8 +322,6 @@ export class SyncEngine implements ISyncEngine {
             };
         }
     }
-
-
 
 
     async query<T extends { id: string }>(
@@ -301,7 +339,6 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
-
     enableAutoSync(pullInterval?: number): void {
         if (this.pullTimer) {
             clearInterval(this.pullTimer);
@@ -317,7 +354,6 @@ export class SyncEngine implements ISyncEngine {
             this.executePullTask();
         }, this.options.autoSync.pullInterval);
     }
-
 
 
     disableAutoSync(): void {
@@ -384,7 +420,6 @@ export class SyncEngine implements ISyncEngine {
         );
         return canSync;
     }
-
 
 
     updateSyncOptions(options: Partial<SyncOptions>): SyncOptions {
@@ -504,10 +539,10 @@ export class SyncEngine implements ISyncEngine {
         this.isInitialized = false;
     }
 
-    // disconnect cloud adapter
+
     disconnectCloud(): void {
-        this.updateStatus(SyncStatus.OFFLINE);
         this.cloudCoordinator = undefined;
+        this.updateStatus(SyncStatus.OFFLINE);
     }
 
 
