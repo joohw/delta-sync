@@ -285,7 +285,6 @@ export class SyncEngine implements ISyncEngine {
             if (latestVersion && this.options.onVersionUpdate) {
                 this.options.onVersionUpdate(latestVersion);
             }
-
             this.updateStatus(SyncStatus.IDLE);
             return {
                 success: true,
