@@ -62,7 +62,6 @@ export class SyncEngine implements ISyncEngine {
             }
             this.isInitialized = true;
         } catch (error) {
-            console.error('初始化同步引擎失败:', error);
             throw error;
         }
     }
@@ -276,7 +275,6 @@ export class SyncEngine implements ISyncEngine {
             for (let i = 0; i < toUpload.length; i += batchSize) {
                 try {
                     const batchItems = toUpload.slice(i, i + batchSize);
-                    console.log(`处理上传批次 ${Math.floor(i / batchSize) + 1}/${Math.ceil(toUpload.length / batchSize)}`);
                     const batchChangeSet = await this.localCoordinator.extractChanges(batchItems);
                     let batchUploadCount = 0;
                     for (const itemChanges of batchChangeSet.put.values()) {
