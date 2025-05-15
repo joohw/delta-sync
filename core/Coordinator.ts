@@ -71,11 +71,17 @@ export class Coordinator implements ICoordinator {
       let offset = 0;
       const limit = 100;
       while (true) {
-        const { items, hasMore } = await this.adapter.readStore<T>(
+        const result = await this.adapter.readStore<T>(
           storeName,
           limit,
           offset
         );
+        if (!result) {
+          console.warn(`Store ${storeName} returned undefined or null`);
+          break;
+        }
+        const items = result.items || [];
+        const hasMore = result.hasMore || false;
         allItems = allItems.concat(items);
         if (!hasMore) break;
         offset += limit;
@@ -83,7 +89,7 @@ export class Coordinator implements ICoordinator {
       return allItems;
     } catch (error) {
       console.error(`Failed to read all data from store ${storeName}:`, error);
-      throw error;
+      return [];
     }
   }
 
@@ -209,21 +215,36 @@ export class Coordinator implements ICoordinator {
   async rebuildSyncView(): Promise<void> {
     try {
       this.syncView.clear();
-      const stores = (await this.adapter.getStores())
+      const allStores = await this.adapter.getStores();
+      const stores = (allStores || [])
         .filter(store => store !== this.TOMBSTONE_STORE);
       for (const store of stores) {
-        const items = await this.readAll<{ id: string; _ver?: number }>(store);
-        const itemsToUpsert = items
-          .filter(item => item && item.id)
-          .map(item => ({
-            id: item.id,
-            store: store,
-            _ver: item._ver || Date.now(),
-          }));
-        this.syncView.upsertBatch(itemsToUpsert);
+        try {
+          const items = await this.readAll<{ id: string; _ver?: number }>(store);
+          if (!Array.isArray(items)) {
+            console.warn(`Store ${store} returned non-array items`);
+            continue;
+          }
+          const itemsToUpsert = items
+            .filter(item => item && typeof item === 'object' && 'id' in item && item.id)
+            .map(item => ({
+              id: item.id,
+              store: store,
+              _ver: item._ver || Date.now(),
+            }));
+          this.syncView.upsertBatch(itemsToUpsert);
+        } catch (storeError) {
+          console.error(`Error processing store ${store}:`, storeError);
+        }
       }
-      const tombstones = await this.readAll<SyncViewItem>(this.TOMBSTONE_STORE);
-      this.syncView.upsertBatch(tombstones);
+      try {
+        const tombstones = await this.readAll<SyncViewItem>(this.TOMBSTONE_STORE);
+        if (Array.isArray(tombstones)) {
+          this.syncView.upsertBatch(tombstones);
+        }
+      } catch (tombstoneError) {
+        console.error('Error processing tombstones:', tombstoneError);
+      }
     } catch (error) {
       console.error('Failed to rebuild sync view:', error);
       throw error;
@@ -239,28 +260,33 @@ export class Coordinator implements ICoordinator {
     await this.ensureInitialized();
     const { since = 0, offset = 0, limit = 100 } = options;
     try {
-      const result = await this.adapter.readStore<T>(
-        storeName,
-        limit,
-        offset
-      );
+      const result = await this.adapter.readStore<T>(storeName, limit, offset);
+      if (!result) {
+        console.warn(`Query returned undefined for store ${storeName}`);
+        return { items: [], hasMore: false };
+      }
+      const items = result.items || [];
+      const hasMore = result.hasMore || false;
       if (since > 0) {
-        const filteredItems = result.items.filter(item => {
+        const filteredItems = items.filter(item => {
+          if (!item) return false;
           const viewItem = this.syncView.get(storeName, item.id);
           return viewItem && viewItem._ver > since;
         });
         return {
           items: filteredItems,
-          hasMore: result.hasMore
+          hasMore: hasMore
         };
       }
-      return result;
+      return {
+        items: items,
+        hasMore: hasMore
+      };
     } catch (error) {
       console.error(`Query failed for store ${storeName}:`, error);
-      throw error;
+      return { items: [], hasMore: false };
     }
   }
-
 
   // core methods for applying changes
   async applyChanges<T extends { id: string }>(
