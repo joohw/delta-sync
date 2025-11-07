@@ -1,56 +1,47 @@
 // core/SyncEngine.ts
 
 import {
-    ISyncEngine,
     DatabaseAdapter,
-    SyncOptions,
-    SyncView,
+    DataChange,
+    DataChangeSet,
+    TOMBSTONE_STORE,
     SyncStatus,
-    SyncResult,
-    SyncQueryOptions,
-    SyncQueryResult,
 } from './types';
-import { Coordinator } from './Coordinator'
+import { SyncViewItem, getViewDiff } from './SyncView';
+import { syncFromDiff, applyChangesToAdapter } from './sync';
+import { SyncOptions, createDefaultOptions } from './option';
+import { getDeltaViewDiff } from './checkpoints'
 
 
-export class SyncEngine implements ISyncEngine {
+export class SyncEngine {
 
-
-    private localCoordinator: Coordinator;
-    private cloudCoordinator?: Coordinator;
     private options: SyncOptions;
+    private localAdapter: DatabaseAdapter;
+    private cloudAdapter?: DatabaseAdapter;
     private syncStatus: SyncStatus = SyncStatus.OFFLINE;
     private isInitialized: boolean = false;
     private pullTimer?: ReturnType<typeof setInterval>;
     private pushDebounceTimer?: ReturnType<typeof setTimeout>;
+    private storesToSync: string[] = [];
+    private lastSyncedVersion: number = 0;
+
+
+    // 待同步的数据库更改
+    private pendingChanges: DataChangeSet = {
+        put: new Map<string, DataChange[]>(),
+        delete: new Map<string, DataChange[]>(),
+    };
 
 
     constructor(
         localAdapter: DatabaseAdapter,
+        storesToSync: string[],
         options: SyncOptions = {}
     ) {
-        this.localCoordinator = new Coordinator(localAdapter);
-        this.options = this.mergeDefaultOptions(options);
-        console.log('Powered by Delta Sync 0.1.5');
-    }
-
-
-    private mergeDefaultOptions(options: SyncOptions): SyncOptions {
-        return {
-            autoSync: {
-                enabled: false,
-                pullInterval: 60000,
-                pushDebounce: 10000,
-                retryDelay: 3000,
-                ...options.autoSync
-            },
-            maxRetries: 3,
-            timeout: 30000,
-            batchSize: 100,
-            maxFileSize: 10 * 1024 * 1024, // 10MB
-            fileChunkSize: 1024 * 1024, // 1MB
-            ...options
-        };
+        this.storesToSync = storesToSync;
+        this.localAdapter = localAdapter;
+        this.options = createDefaultOptions(options);
+        console.log('Powered by Delta Sync 0.1.13');
     }
 
 
@@ -77,7 +68,7 @@ export class SyncEngine implements ISyncEngine {
 
     async setCloudAdapter(cloudAdapter: DatabaseAdapter): Promise<void> {
         this.updateStatus(SyncStatus.IDLE)
-        this.cloudCoordinator = new Coordinator(cloudAdapter);
+        this.cloudAdapter = cloudAdapter
     }
 
 
@@ -89,21 +80,46 @@ export class SyncEngine implements ISyncEngine {
         await this.ensureInitialized();
         try {
             const items = Array.isArray(data) ? data : [data];
-            const savedItems = await this.localCoordinator.putBulk(storeName, items);
+            const newVersion = Date.now();
+            const itemsWithVersion = items.map(item => ({
+                ...item,
+                _ver: newVersion
+            }));
+            const results = await this.localAdapter.putBulk(storeName, itemsWithVersion);
+            this.cacheDataChanges(storeName, results, 'put');
             this.handleDataChange();
-            return savedItems;
+            return results;
         } catch (error) {
             console.error('Save operation failed:', error);
             throw error;
         }
     }
 
+    // 添加数据到对应的墓碑中
+    private async addTombstones(items: SyncViewItem[]): Promise<void> {
+        if (!this.storesToSync.includes(TOMBSTONE_STORE)) {
+            console.warn(`[Coordinator] Skipping tombstone addition - TOMBSTONE_STORE not supported`);
+            return;
+        }
+        await this.localAdapter.putBulk(TOMBSTONE_STORE, items);
+    }
 
+
+    // 删除数据
     async delete(storeName: string, ids: string | string[]): Promise<void> {
         await this.ensureInitialized();
         try {
             const idsToDelete = Array.isArray(ids) ? ids : [ids];
-            await this.localCoordinator.deleteBulk(storeName, idsToDelete);
+            await this.localAdapter.deleteBulk(storeName, idsToDelete);
+            const currentVersion = Date.now();
+            const tombstones = idsToDelete.map(id => ({
+                id,
+                store: storeName, // **保存原始store名称**
+                _ver: currentVersion,
+                deleted: true
+            }));
+            await this.addTombstones(tombstones);
+            this.cacheDataChanges(storeName, idsToDelete.map(id => ({ id, _ver: Date.now() })), 'delete');
             this.handleDataChange();
         } catch (error) {
             console.error('Delete operation failed:', error);
@@ -112,110 +128,100 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
-    async sync(): Promise<SyncResult> {
-        if (!this.cloudCoordinator) {
-            this.updateStatus(SyncStatus.OFFLINE);
-            return {
-                success: false,
-                error: 'Cloud adapter not set',
-                stats: { uploaded: 0, downloaded: 0, errors: 1 }
-            };
-        }
-        try {
-            const pullResult = await this.pull();
-            const pushResult = await this.push();
-            return {
-                success: pullResult.success && pushResult.success,
-                error: pullResult.success ? pushResult.error : pullResult.error,
-                syncedAt: Date.now(),
-                stats: {
-                    uploaded: pushResult.stats?.uploaded || 0,
-                    downloaded: pullResult.stats?.downloaded || 0,
-                    errors: (pullResult.stats?.errors || 0) + (pushResult.stats?.errors || 0)
-                }
-            };
-        } catch (error) {
-            this.updateStatus(SyncStatus.ERROR);
-            console.error('Sync failed:', error);
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error',
-                stats: { uploaded: 0, downloaded: 0, errors: 1 }
-            };
+
+    // 记录本地的即时变更以便及时同步
+    private cacheDataChanges<T extends { id: string }>(
+        storeName: string,
+        items: T[] | { id: string; _ver: number }[],
+        operation: 'put' | 'delete'
+    ): void {
+        const targetMap = operation === 'put' ? this.pendingChanges.put : this.pendingChanges.delete;
+        if (operation === 'put') {
+            const putItems = items as T[];
+            const changes = putItems.map(item => ({
+                id: item.id,
+                data: item,
+                _ver: (item as any)._ver || Date.now()
+            }));
+            targetMap.set(storeName, changes);
+        } else {
+            const deleteItems = items as { id: string; _ver: number }[];
+            const changes = deleteItems.map(item => ({
+                id: item.id,
+                _ver: item._ver
+            }));
+            targetMap.set(storeName, changes);
         }
     }
 
 
-    async pull(): Promise<SyncResult> {
-        if (!this.cloudCoordinator) {
+    // 增量拉取，只拉取某一个时间段之后的最新数据
+    async incrementalPull(): Promise<void> {
+        console.log('[SyncEngine] Incremental pulling from cloud...');
+        if (!this.cloudAdapter) {
             this.updateStatus(SyncStatus.OFFLINE);
-            return {
-                success: false,
-                error: 'Cloud adapter not set',
-                stats: { uploaded: 0, downloaded: 0, errors: 1 }
-            };
-        }
-        const canPull = await this.checkPullAvailable();
-        if (!canPull) {
-            this.updateStatus(SyncStatus.ERROR);
-            return {
-                success: false,
-                error: 'Pull not available',
-                stats: { uploaded: 0, downloaded: 0, errors: 1 }
-            };
+            return;
         }
         try {
+            this.updateStatus(SyncStatus.CHECKING);
+            const diff = await getDeltaViewDiff(this.cloudAdapter, this.localAdapter, this.storesToSync);
+            if (diff.toDownload.length === 0 && diff.toDelete.length === 0) {
+                console.log('[SyncEngine] No incremental changes found');
+                return;
+            }
             this.updateStatus(SyncStatus.DOWNLOADING);
-            await this.localCoordinator.rebuildSyncView();
-            await this.cloudCoordinator.rebuildSyncView();
-            const localView = await this.localCoordinator.getCurrentView();
-            const cloudView = await this.cloudCoordinator.getCurrentView();
-            const { toDownload } = SyncView.diffViews(localView, cloudView);
-            if (toDownload.length === 0) {
-                this.updateStatus(SyncStatus.IDLE);
-                return {
-                    success: true,
-                    syncedAt: Date.now(),
-                    stats: { uploaded: 0, downloaded: 0, errors: 0 }
-                };
-            }
-            const batchSize = this.options.batchSize || 100;
-            let downloadedCount = 0;
-            let latestVersion = 0;
-            for (let i = 0; i < toDownload.length; i += batchSize) {
-                const batch = toDownload.slice(i, i + batchSize);
-                const batchChangeSet = await this.cloudCoordinator.extractChanges(batch);
-                for (const itemChanges of batchChangeSet.put.values()) {
-                    downloadedCount += itemChanges.length;
+            await syncFromDiff(
+                this.cloudAdapter,
+                this.localAdapter,
+                diff,
+                {
+                    batchSize: this.options.batchSize || 100,
+                    onProgress: this.options.onSyncProgress,
+                    onChangesApplied: this.options.onChangePulled,
                 }
-                for (const itemChanges of batchChangeSet.delete.values()) {
-                    downloadedCount += itemChanges.length;
-                }
-                const batchLatestVersion = Math.max(...batch.map(item => item._ver || 0));
-                latestVersion = Math.max(latestVersion, batchLatestVersion);
-                await this.localCoordinator.applyChanges(batchChangeSet);
-                this.options.onChangePulled?.(batchChangeSet);
-                this.options.onSyncProgress?.({
-                    processed: i + batch.length,
-                    total: toDownload.length,
-                });
-            }
-            // Update version if needed
-            if (latestVersion && this.options.onVersionUpdate) {
-                this.options.onVersionUpdate(latestVersion);
-            }
-
+            );
             this.updateStatus(SyncStatus.IDLE);
-            return {
-                success: true,
-                syncedAt: Date.now(),
-                stats: {
-                    uploaded: 0,
-                    downloaded: downloadedCount,
-                    errors: 0
-                }
-            };
+        } catch (error) {
+            this.updateStatus(SyncStatus.ERROR);
+            console.error('[SyncEngine] Incremental pull failed:', error);
+        }
+    }
 
+
+
+    // 全量拉取最新的云端数据
+    async pull() {
+        console.log('[SyncEngine] Pulling data from cloud...')
+        if (!this.cloudAdapter) {
+            this.updateStatus(SyncStatus.OFFLINE);
+            return;
+        }
+        if (!await this.checkPullAvailable()) {
+            this.updateStatus(SyncStatus.ERROR);
+            return;
+        }
+        try {
+            this.updateStatus(SyncStatus.CHECKING);
+            const diff = await getViewDiff(this.cloudAdapter, this.localAdapter, this.storesToSync);
+            this.updateStatus(SyncStatus.DOWNLOADING);
+            await syncFromDiff(
+                this.cloudAdapter,
+                this.localAdapter,
+                diff,
+                {
+                    batchSize: this.options.batchSize || 100,
+                    onProgress: this.options.onSyncProgress,
+                    onChangesApplied: this.options.onChangePulled,
+                    onVersionUpdated: (version) => {
+                        console.log('本地数据的最新版本已经更新到', version)
+                        this.lastSyncedVersion = version;
+                        this.options.onVersionUpdate && this.options.onVersionUpdate(version);
+                    }
+                }
+            );
+            this.clearPendingChanges();
+            this.updateStatus(SyncStatus.IDLE);
+            return;
         } catch (error) {
             this.updateStatus(SyncStatus.ERROR);
             console.error('[SyncEngine] Pull failed:', error);
@@ -228,73 +234,33 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
-    async push(): Promise<SyncResult> {
-        if (!this.cloudCoordinator) {
+
+    async push() {
+        console.log('[SyncEngine] Pushing data to cloud...');
+        if (!this.cloudAdapter) {
             this.updateStatus(SyncStatus.OFFLINE);
-            return {
-                success: false,
-                error: 'Cloud adapter not set',
-                stats: { uploaded: 0, downloaded: 0, errors: 1 }
-            };
+            return
         }
-        const canPush = await this.checkPushAvailable();
-        if (!canPush) {
+        if (!await this.checkPushAvailable()) {
             this.updateStatus(SyncStatus.ERROR);
-            return {
-                success: false,
-                error: 'Push not available',
-                stats: { uploaded: 0, downloaded: 0, errors: 1 }
-            };
+            return
         }
         try {
+            this.updateStatus(SyncStatus.CHECKING);
+            const diff = await getViewDiff(this.localAdapter, this.cloudAdapter, this.storesToSync);
             this.updateStatus(SyncStatus.UPLOADING);
-            await this.localCoordinator.rebuildSyncView();
-            const localView = await this.localCoordinator.getCurrentView();
-            const cloudView = await this.cloudCoordinator.getCurrentView();
-            const { toUpload } = SyncView.diffViews(localView, cloudView);
-            if (toUpload.length === 0) {
-                this.updateStatus(SyncStatus.IDLE);
-                return {
-                    success: true,
-                    syncedAt: Date.now(),
-                    stats: { uploaded: 0, downloaded: 0, errors: 0 }
-                };
-            }
-            const batchSize = this.options.batchSize || 100;
-            let uploadedCount = 0;
-            let latestVersion = 0;
-            
-            for (let i = 0; i < toUpload.length; i += batchSize) {
-                const batch = toUpload.slice(i, i + batchSize);
-                const batchChangeSet = await this.localCoordinator.extractChanges(batch);
-                for (const itemChanges of batchChangeSet.put.values()) {
-                    uploadedCount += itemChanges.length;
+            await syncFromDiff(
+                this.localAdapter,
+                this.cloudAdapter,
+                diff,
+                {
+                    batchSize: this.options.batchSize || 100,
+                    onProgress: this.options.onSyncProgress,
                 }
-                for (const itemChanges of batchChangeSet.delete.values()) {
-                    uploadedCount += itemChanges.length;
-                }
-                const batchLatestVersion = Math.max(...batch.map(item => item._ver || 0));
-                latestVersion = Math.max(latestVersion, batchLatestVersion);
-                await this.cloudCoordinator.applyChanges(batchChangeSet);
-                this.options.onChangePushed?.(batchChangeSet);
-                this.options.onSyncProgress?.({
-                    processed: i + batch.length,
-                    total: toUpload.length,
-                });
-            }
-            if (latestVersion && this.options.onVersionUpdate) {
-                this.options.onVersionUpdate(latestVersion);
-            }
+            );
+            this.clearPendingChanges();
             this.updateStatus(SyncStatus.IDLE);
-            return {
-                success: true,
-                syncedAt: Date.now(),
-                stats: {
-                    uploaded: uploadedCount,
-                    downloaded: 0,
-                    errors: 0
-                }
-            };
+            return;
         } catch (error) {
             this.updateStatus(SyncStatus.ERROR);
             console.error('[SyncEngine] Push failed:', error);
@@ -307,22 +273,22 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
-
-
-    async query<T extends { id: string }>(
-        storeName: string,
-        options?: SyncQueryOptions
-    ): Promise<SyncQueryResult<T>> {
-        await this.ensureInitialized();
+    // 全量同步
+    async fullSync() {
+        console.log('[SyncEngine] Starting full sync...');
+        if (!this.cloudAdapter) {
+            this.updateStatus(SyncStatus.OFFLINE);
+            return;
+        }
         try {
-            const result = await this.localCoordinator.query<T>(storeName, options);
-            return result;
+            await this.pull();
+            await this.push();
         } catch (error) {
-            console.error(`Query failed for store ${storeName}:`, error);
-            throw error;
+            this.updateStatus(SyncStatus.ERROR);
+            console.error('[SyncEngine] Sync failed:', error);
+            return
         }
     }
-
 
 
     enableAutoSync(pullInterval?: number): void {
@@ -372,12 +338,55 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
+    private clearPendingChanges(): void {
+        this.pendingChanges.put.clear();
+        this.pendingChanges.delete.clear();
+    }
+
+
+
+    // 即时同步本地的最新改动
+    private async instantSync() {
+        console.log('[SyncEngine] Instant syncing data to cloud...')
+        if (!this.cloudAdapter) {
+            this.updateStatus(SyncStatus.OFFLINE);
+            return;
+        }
+        if (!this.hasPendingChanges()) {
+            return;
+        }
+        if (!await this.checkPushAvailable()) {
+            this.updateStatus(SyncStatus.ERROR);
+            return;
+        }
+        try {
+            this.updateStatus(SyncStatus.UPLOADING);
+            let totalUploaded = 0;
+            if (this.hasPendingChanges()) {
+                await applyChangesToAdapter(
+                    this.cloudAdapter,
+                    this.pendingChanges,
+                    this.storesToSync);
+                this.options.onChangePushed && this.options.onChangePushed(this.pendingChanges);
+            }
+            this.clearPendingChanges();
+            this.updateStatus(SyncStatus.IDLE);
+            return;
+        } catch (error) {
+            this.updateStatus(SyncStatus.ERROR);
+            console.error('[SyncEngine] Instant sync failed:', error);
+            return;
+        }
+    }
+
+
+
     // callback
     private handleDataChange(): void {
         if (!this.options.autoSync?.enabled) {
             return;
         }
-        if (!this.cloudCoordinator) {
+        if (!this.cloudAdapter) {
             return;
         }
         if (this.pushDebounceTimer) {
@@ -386,31 +395,20 @@ export class SyncEngine implements ISyncEngine {
         this.pushDebounceTimer = setTimeout(async () => {
             try {
                 if (this.canTriggerSync()) {
-                    await this.push();
+                    await this.instantSync();
                 } else {
-                    console.warn('[SyncEngine] Sync skipped caused by checking process')
+                    console.warn('[SyncEngine] Instant sync skipped caused by checking process');
                 }
             } catch (error) {
-                console.error('[SyncEngine] Scheduled push failed:', error);
+                console.error('[SyncEngine] Scheduled instant sync failed:', error);
             }
         }, this.options.autoSync?.pushDebounce || 10000);
     }
 
 
-
-    private canTriggerSync(): boolean {
-        const isAutoSyncEnabled = this.options.autoSync?.enabled === true;
-        const canSync = Boolean(
-            isAutoSyncEnabled &&
-            this.cloudCoordinator !== undefined &&
-            ![SyncStatus.ERROR, SyncStatus.UPLOADING, SyncStatus.DOWNLOADING].includes(this.syncStatus)
-        );
-        return canSync;
-    }
-
-
-    updateSyncOptions(options: Partial<SyncOptions>): SyncOptions {
-        this.options = this.mergeDefaultOptions({
+    // 更新同步设置
+    public updateSyncOptions(options: Partial<SyncOptions>): SyncOptions {
+        this.options = createDefaultOptions({
             ...this.options,
             ...options
         });
@@ -425,19 +423,15 @@ export class SyncEngine implements ISyncEngine {
     }
 
 
+
     async clearCloudStores(stores: string | string[]): Promise<void> {
-        if (!this.cloudCoordinator) {
+        if (!this.cloudAdapter) {
             throw new Error('Cloud adapter not set');
         }
         try {
             this.updateStatus(SyncStatus.OPERATING);
-            const cloudAdapter = await this.cloudCoordinator.getAdapter();
-            const availableStores = await cloudAdapter.getStores();
+            const cloudAdapter = await this.cloudAdapter;
             const storesToClear = Array.isArray(stores) ? stores : [stores];
-            const invalidStores = storesToClear.filter(store => !availableStores.includes(store));
-            if (invalidStores.length > 0) {
-                throw new Error(`Invalid stores: ${invalidStores.join(', ')}`);
-            }
             const clearPromises = storesToClear.map(async (store) => {
                 try {
                     const result = await cloudAdapter.clearStore(store);
@@ -466,16 +460,14 @@ export class SyncEngine implements ISyncEngine {
     async clearLocalStores(stores: string | string[]): Promise<void> {
         try {
             this.updateStatus(SyncStatus.OPERATING);
-            const localAdapter = await this.localCoordinator.getAdapter();
-            const availableStores = await localAdapter.getStores();
             const storesToClear = Array.isArray(stores) ? stores : [stores];
-            const invalidStores = storesToClear.filter(store => !availableStores.includes(store));
+            const invalidStores = storesToClear.filter(store => !this.storesToSync.includes(store));
             if (invalidStores.length > 0) {
                 throw new Error(`Invalid stores: ${invalidStores.join(', ')}`);
             }
             const clearPromises = storesToClear.map(async (store) => {
                 try {
-                    const result = await localAdapter.clearStore(store);
+                    const result = await this.localAdapter.clearStore(store);
                     if (!result) {
                         console.warn(`Failed to clear store: ${store}`);
                     }
@@ -490,7 +482,6 @@ export class SyncEngine implements ISyncEngine {
             if (failures.length > 0) {
                 throw new Error(`Failed to clear stores: ${failures.map(f => f.store).join(', ')}`);
             }
-            await this.localCoordinator.initSync();
             this.updateStatus(SyncStatus.IDLE);
         } catch (error) {
             this.updateStatus(SyncStatus.ERROR);
@@ -498,38 +489,30 @@ export class SyncEngine implements ISyncEngine {
         }
     }
 
-    // get local coordinator
-    getlocalCoordinator(): Coordinator {
-        return this.localCoordinator;
-    }
-
-
-    getCloudCoordinator(): Coordinator | undefined {
-        return this.cloudCoordinator;
-    }
-
-    // get local adapter
-    getlocalAdapter(): DatabaseAdapter {
-        return this.localCoordinator.adapter;
-    }
-
-    getCloudAdapter(): DatabaseAdapter | undefined {
-        return this.cloudCoordinator?.adapter;
-    }
-
 
     // dispose
     dispose(): void {
         this.disableAutoSync();
+        this.clearPendingChanges();
         this.syncStatus = SyncStatus.OFFLINE;
-        this.disconnectCloud();
         this.isInitialized = false;
     }
 
 
-    disconnectCloud(): void {
-        this.cloudCoordinator = undefined;
-        this.updateStatus(SyncStatus.OFFLINE);
+    // 检查当前是否可以触发同步
+    private canTriggerSync(): boolean {
+        const isAutoSyncEnabled = this.options.autoSync?.enabled === true;
+        const canSync = Boolean(
+            isAutoSyncEnabled &&
+            this.cloudAdapter !== undefined &&
+            ![SyncStatus.ERROR, SyncStatus.UPLOADING, SyncStatus.DOWNLOADING].includes(this.syncStatus)
+        );
+        return canSync;
+    }
+
+
+    private hasPendingChanges(): boolean {
+        return this.pendingChanges.put.size > 0 || this.pendingChanges.delete.size > 0
     }
 
 
@@ -553,10 +536,14 @@ export class SyncEngine implements ISyncEngine {
         if (this.options.onPushAvailableCheck) {
             try {
                 const result = await Promise.resolve(this.options.onPushAvailableCheck());
-                return result;
+                if (result === false) {
+                    this.updateStatus(SyncStatus.REJECTED);
+                    return false;
+                }
+                return true;
             } catch (error) {
                 console.error('[SyncEngine] Push availability check failed:', error);
-                return false;
+                throw new Error(error instanceof Error ? error.message : 'Push availability check failed');
             }
         }
         return true;
@@ -574,4 +561,5 @@ export class SyncEngine implements ISyncEngine {
             }
         }
     }
+
 }

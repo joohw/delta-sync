@@ -2,10 +2,9 @@
 
 // Export type definitions
 export * from './core/types';
-
-// Export core components
-export * from './core/Coordinator';
+export * from './core/types';
 export * from './core/SyncEngine';
+export * from './core/option'
+export * from './core/SyncView'
+export * from './core/clear'
 
-// Export adapters
-export * from './core/adapters/MemoryAdapter';
