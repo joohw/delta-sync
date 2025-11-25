@@ -1,8 +1,7 @@
 // core/types.ts
+import { SyncViewItem } from "./SyncView";
 
-import { SyncViewItem } from './SyncView';
 export const TOMBSTONE_STORE = 'tombStones';
-export const TOMBSTONE_RETENTION = 180 * 24 * 60 * 60 * 1000;
 
 
 // 同步状态
@@ -18,14 +17,25 @@ export enum SyncStatus {
 }
 
 
-// 同步进度
+export interface SyncResult {
+    success: boolean;
+    error?: string;
+    syncedAt?: number;
+    stats?: {
+        uploaded: number;
+        downloaded: number;
+        errors: number;
+    };
+}
+
+
 export interface SyncProgress {
     processed: number;
     total: number;
 }
 
 
-// 包含单条数据的完整数据变更
+// 单条数据变更（包含完整数据）
 export interface DataChange<T = any> {
     id: string;
     _ver: number;
@@ -40,13 +50,8 @@ export interface DataChangeSet {
 }
 
 
-
+// 本地数据变更
 export interface DatabaseAdapter {
-    readStore<T extends { id: string }>(
-        storeName: string,
-        limit?: number,
-        offset?: number
-    ): Promise<{ items: T[]; hasMore: boolean }>;
     listStoreItems(
         storeName: string,
         offset?: number,
@@ -57,6 +62,11 @@ export interface DatabaseAdapter {
         hasMore?: boolean,
         offset?: number
     }>;
+    readStore<T extends { id: string }>(
+        storeName: string,
+        limit?: number,
+        offset?: number
+    ): Promise<{ items: T[]; hasMore: boolean }>;
     readBulk<T extends { id: string }>(
         storeName: string,
         ids: string[]

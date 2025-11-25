@@ -1,3 +1,5 @@
+// @/core/delta-sync/core/sync.ts
+
 import { DatabaseAdapter, DataChangeSet, SyncProgress, DataChange, } from './types';
 import { ViewDiff, SyncViewItem } from './SyncView';
 import { TOMBSTONE_STORE } from './types'
@@ -20,10 +22,8 @@ export const syncFromDiff = async (
     let updated = 0;
     let deleted = 0;
     let errors = 0;
-    // Calculate total items to process
     const totalItems = viewDiff.toDownload.length + viewDiff.toDelete.length;
     let processedItems = 0;
-    // Helper function to update progress
     const updateProgress = (increment: number = 1) => {
         processedItems += increment;
         if (onProgress) {
@@ -38,9 +38,8 @@ export const syncFromDiff = async (
     for (let i = 0; i < viewDiff.toDownload.length; i += batchSize) {
         const batch = viewDiff.toDownload.slice(i, i + batchSize);
         try {
-            const changeSet = await extractChangesFromAdapter(sourceAdapter, batch, []);
-            await applyChangesToAdapter(targetAdapter, changeSet, []);
-            // 收集版本号
+            const changeSet = await extractChangesFromAdapter(sourceAdapter, batch);
+            await applyChangesToAdapter(targetAdapter, changeSet);
             for (const changes of changeSet.put.values()) {
                 for (const change of changes) {
                     allVersions.push(change._ver);
@@ -60,12 +59,10 @@ export const syncFromDiff = async (
             updateProgress(batch.length);
         }
     }
-    // Process data deletions
     if (viewDiff.toDelete.length > 0) {
         try {
-            const changeSet = await extractChangesFromAdapter(sourceAdapter, viewDiff.toDelete, []);
-            await applyChangesToAdapter(targetAdapter, changeSet, []);
-            // 收集版本号
+            const changeSet = await extractChangesFromAdapter(sourceAdapter, viewDiff.toDelete);
+            await applyChangesToAdapter(targetAdapter, changeSet);
             for (const changes of changeSet.delete.values()) {
                 for (const change of changes) {
                     allVersions.push(change._ver);
@@ -80,7 +77,6 @@ export const syncFromDiff = async (
             updateProgress(viewDiff.toDelete.length);
         }
     }
-    // 计算并回调最大版本号
     if (allVersions.length > 0 && onVersionUpdated) {
         const maxVersion = Math.max(...allVersions);
         onVersionUpdated(maxVersion);
@@ -93,7 +89,6 @@ export const syncFromDiff = async (
 export const extractChangesFromAdapter = async (
     adapter: DatabaseAdapter,
     items: SyncViewItem[],
-    allStores: string[]
 ): Promise<DataChangeSet> => {
     const deleteMap = new Map<string, DataChange[]>();
     const putMap = new Map<string, DataChange[]>();
@@ -101,9 +96,9 @@ export const extractChangesFromAdapter = async (
         console.error('[extractChangesFromAdapter] Received invalid items:', items);
         return { delete: deleteMap, put: putMap };
     }
-    const regularItems = items.filter(item => allStores.includes(item.store));
+    // 直接按 store 分组，不需要过滤
     const storeGroups = new Map<string, SyncViewItem[]>();
-    for (const item of regularItems) {
+    for (const item of items) {
         if (!item || typeof item !== 'object' || !item.store || !item.id) {
             console.warn('[extractChangesFromAdapter] Skipping invalid item:', item);
             continue;
@@ -156,29 +151,19 @@ export const extractChangesFromAdapter = async (
 
 
 
-
 // 写入完整的变更到对应的适配器
 export const applyChangesToAdapter = async (
     adapter: DatabaseAdapter,
     changeSet: DataChangeSet,
-    supportedStores: string[] // 适配器支持的store列表
 ): Promise<void> => {
     try {
         // 应用数据修改
         for (const [store, changes] of changeSet.put) {
-            if (!supportedStores.includes(store)) {
-                console.warn(`[applyChangesToAdapter] Skipping unsupported store in put operation: ${store}`);
-                continue;
-            }
             await adapter.deleteBulk(TOMBSTONE_STORE, changes.map(c => c.id));//防止墓碑中存在数据
             await adapter.putBulk(store, changes.map(c => c.data));
         }
         // 应用删除操作
         for (const [store, changes] of changeSet.delete) {
-            if (!supportedStores.includes(store)) {
-                console.warn(`[applyChangesToAdapter] Skipping unsupported store in delete operation: ${store}`);
-                continue;
-            }
             await adapter.deleteBulk(store, changes.map(c => c.id));
             const tombstones = changes.map(change => ({
                 id: change.id,

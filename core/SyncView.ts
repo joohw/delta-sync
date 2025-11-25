@@ -2,7 +2,7 @@ import { DatabaseAdapter } from "./types";
 import { TOMBSTONE_STORE } from './types'
 
 
-// 数据的视图项（用于同步的缩略）
+
 export interface SyncViewItem {
     id: string;
     _ver: number;
@@ -17,8 +17,10 @@ export type ViewDiff = {
 };
 
 
+export type SyncCheckPoint = Map<string, number>;
 
-// 视图类，作为数据库的缩略，用于快速比对
+
+
 export class SyncView {
 
     private stores: Map<string, Map<string, SyncViewItem>>;
@@ -77,11 +79,10 @@ export class SyncView {
     }
 
 
-    // 比较两个视图的差异
+    // 比较本地视图相对云端视图的差异，注意参数顺序。
     static diffViews(local: SyncView, remote: SyncView): ViewDiff {
         const toDownload: SyncViewItem[] = [];
         const toDelete: SyncViewItem[] = [];
-        // 获取所有stores的并集，而不仅仅是共有的stores
         const allStores = new Set([
             ...local.getStores(),
             ...remote.getStores()
@@ -89,11 +90,9 @@ export class SyncView {
         for (const store of allStores) {
             const localStoreMap = local.getStoreMap(store);
             const remoteStoreMap = remote.getStoreMap(store);
-            // 如果远程没有这个store，跳过（本地有的话会由反向diff处理上传）
             if (!remoteStoreMap) {
                 continue;
             }
-            // 获取这个store中所有id的并集
             const allIds = new Set([
                 ...(localStoreMap?.keys() ?? []),
                 ...(remoteStoreMap?.keys() ?? [])
@@ -134,29 +133,27 @@ export class SyncView {
 
 export const getSyncViewFromAdapter = async (
     adapter: DatabaseAdapter,
-    specificStores?: string[]
+    specificStores?: string[],
+    since?: number
 ): Promise<SyncView> => {
     const storesToProcess = specificStores || [];
     const regularStores = storesToProcess.filter(store => store !== TOMBSTONE_STORE);
     const dataItems: SyncViewItem[] = [];
     // 读取所有常规store的数据
     for (const store of regularStores) {
-        const items = await listAllStoreItems(adapter, store);
+        const items = await listAllStoreItems(adapter, store, since);
         dataItems.push(...items.map(item => ({
             id: item.id,
             store: store,
             _ver: item._ver,
-            deleted: false
         })));
     }
-    // 读取墓碑数据
-    const tombstones = await listAllStoreItems(adapter, TOMBSTONE_STORE);
+    // 读取墓碑数据加入到store中去
+    const tombstones = await listAllStoreItems(adapter, TOMBSTONE_STORE, since);
     for (const tombstone of tombstones) {
         const originalStore = tombstone.store;
         if (regularStores.includes(originalStore)) {
-            const existingItem = dataItems.find(item =>
-                item.store === originalStore && item.id === tombstone.id
-            );
+            const existingItem = dataItems.find(item => item.store === originalStore && item.id === tombstone.id);
             if (existingItem) {
                 if (tombstone._ver >= existingItem._ver) {
                     existingItem.deleted = true;
@@ -165,7 +162,7 @@ export const getSyncViewFromAdapter = async (
             } else {
                 dataItems.push({
                     id: tombstone.id,
-                    store: originalStore,
+                    store: tombstone.store,
                     _ver: tombstone._ver,
                     deleted: true
                 });
@@ -177,17 +174,17 @@ export const getSyncViewFromAdapter = async (
 
 
 
-
+// 快速读取store自某个时间点之后的全部syncView
 export const listAllStoreItems = async (
     adapter: DatabaseAdapter,
-    storeName: string
+    storeName: string,
+    since?: number,
 ): Promise<SyncViewItem[]> => {
     try {
         let allItems: SyncViewItem[] = [];
         let currentOffset: number | undefined = undefined;
-
         while (true) {
-            const result = await adapter.listStoreItems(storeName, currentOffset);
+            const result = await adapter.listStoreItems(storeName, currentOffset, 100, since);
             if (!result || !Array.isArray(result.items)) {
                 break;
             }
@@ -205,17 +202,18 @@ export const listAllStoreItems = async (
 }
 
 
-
 // 比较和目标协调器的差异,计算本地协调器需要做的操作
 export const getViewDiff = async (
-    sourceAdapter: DatabaseAdapter,
-    targetAdapter: DatabaseAdapter,
-    stores: string[]
+    localAdapter: DatabaseAdapter,   // 本地数据目标  
+    remoteAdapter: DatabaseAdapter,  // 远程数据源
+    stores: string[],
+    since?: number,
 ): Promise<ViewDiff> => {
     try {
-        const sourceView = await getSyncViewFromAdapter(sourceAdapter, stores);
-        const targetView = await getSyncViewFromAdapter(targetAdapter, stores);
-        return SyncView.diffViews(targetView, sourceView);
+        const localView = await getSyncViewFromAdapter(localAdapter, stores, since);
+        const remoteView = await getSyncViewFromAdapter(remoteAdapter, stores, since);
+        const result = SyncView.diffViews(localView, remoteView)
+        return result;
     } catch (error) {
         console.error('[Coordinator] Failed to calculate diff:', error);
         return {
@@ -224,13 +222,5 @@ export const getViewDiff = async (
         };
     }
 }
-
-
-
-
-
-
-
-
 
 

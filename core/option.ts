@@ -35,7 +35,7 @@ export const createDefaultOptions = (options: SyncOptions): SyncOptions => {
     return {
         autoSync: {
             enabled: false,
-            pullInterval: 60000,
+            pullInterval: 600000,
             pushDebounce: 10000,
             retryDelay: 3000,
             ...options.autoSync
