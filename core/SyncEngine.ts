@@ -11,6 +11,7 @@ import { getViewDiff } from './SyncView';
 import { syncFromDiff, applyChangesToAdapter } from './sync';
 import { SyncOptions, createDefaultOptions } from './option';
 import { clearOldTombstones } from './clear';
+import packageJson from '../package.json';
 
 
 export class SyncEngine {
@@ -40,7 +41,7 @@ export class SyncEngine {
         this.storesToSync = storesToSync;
         this.localAdapter = localAdapter;
         this.options = createDefaultOptions(options);
-        console.log('Powered by Delta Sync 0.1.14');
+        console.log(`Powered by Delta Sync ${packageJson.version}`);
     }
 
 
@@ -53,7 +54,7 @@ export class SyncEngine {
             }
             this.isInitialized = true;
         } catch (error) {
-            console.error('初始化同步引擎失败:', error);
+            console.error('Failed to initialize sync engine:', error);
             throw error;
         }
     }
@@ -167,7 +168,6 @@ export class SyncEngine {
         try {
             this.updateStatus(SyncStatus.CHECKING);
             const diff = await getViewDiff(this.localAdapter, this.cloudAdapter, stores, since);
-            console.log('[DeltySync] Diff Of Pull:', diff)
             this.updateStatus(SyncStatus.DOWNLOADING);
             await syncFromDiff(
                 this.cloudAdapter,

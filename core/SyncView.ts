@@ -196,7 +196,7 @@ export const listAllStoreItems = async (
         }
         return allItems;
     } catch (error) {
-        console.error(`[getSyncViewFromAdapter] 读取存储${storeName}的所有数据失败:`, error);
+        console.error(`[getSyncViewFromAdapter] Failed to read all data from store ${storeName}:`, error);
         return [];
     }
 }

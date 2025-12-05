@@ -13,7 +13,7 @@ export const clearOldTombstones = async (adapter: DatabaseAdapter): Promise<void
         let offset: number = 0;
         let hasMore = true;
         let totalScanned = 0;
-        console.log(`开始清理 ${new Date(cutoffTime).toISOString()} 之前的墓碑记录`);
+        console.log(`Starting cleanup of tombstone records before ${new Date(cutoffTime).toISOString()}`);
         while (hasMore) {
             const result = await adapter.listStoreItems(TOMBSTONE_STORE, offset);
             if (!result?.items?.length) {
@@ -28,22 +28,20 @@ export const clearOldTombstones = async (adapter: DatabaseAdapter): Promise<void
             hasMore = result.hasMore || false;
             offset = result.offset || offset + result.items.length;
             if (totalScanned > 100000) { // 最多扫描10万条记录
-                console.warn('达到最大扫描限制，终止清理');
+                console.warn('Reached maximum scan limit, stopping cleanup');
                 break;
             }
         }
         if (expiredIds.length > 0) {
-            console.log(`扫描了 ${totalScanned} 条记录，清理 ${expiredIds.length} 个过期墓碑记录`);
+            console.log(`Scanned ${totalScanned} records, cleaning ${expiredIds.length} expired tombstone records`);
             const batchSize = 1000;
             for (let i = 0; i < expiredIds.length; i += batchSize) {
                 const batch = expiredIds.slice(i, i + batchSize);
                 await adapter.deleteBulk(TOMBSTONE_STORE, batch);
-                console.log(`已清理 ${Math.min(i + batchSize, expiredIds.length)}/${expiredIds.length} 条记录`);
+                console.log(`Cleaned ${Math.min(i + batchSize, expiredIds.length)}/${expiredIds.length} records`);
             }
-        } else {
-            console.log(`扫描了 ${totalScanned} 条记录，没有找到过期的墓碑记录`);
         }
     } catch (error) {
-        console.error('[clearOldTombstones] 清理旧墓碑失败:', error);
+        console.error('[clearOldTombstones] Failed to clean old tombstones:', error);
     }
 }
