@@ -152,7 +152,8 @@ export class SyncEngine {
 
     // 拉取最新的云端数据,允许指定版本号
     async pull(stores: string[] = this.storesToSync, since?: number,) {
-        if (this.syncStatus !== SyncStatus.IDLE) {
+        // 允许从 ERROR 状态恢复，但阻止其他忙碌状态
+        if (this.syncStatus !== SyncStatus.IDLE && this.syncStatus !== SyncStatus.ERROR) {
             console.warn('[DeltySync] Sync is busy, skip pull');
             return;
         }
@@ -195,8 +196,9 @@ export class SyncEngine {
 
 
     async push(stores: string[] = this.storesToSync, since?: number) {
-        if (this.syncStatus !== SyncStatus.IDLE) {
-            console.warn('[DeltySync] Sync is busy, skip pull');
+        // 允许从 ERROR 状态恢复，但阻止其他忙碌状态
+        if (this.syncStatus !== SyncStatus.IDLE && this.syncStatus !== SyncStatus.ERROR) {
+            console.warn('[DeltySync] Sync is busy, skip push');
             return;
         }
         console.log('[DeltySync] Pushing data to cloud...');
@@ -286,7 +288,8 @@ export class SyncEngine {
 
 
     private async executePullTask(): Promise<void> {
-        if (this.syncStatus !== SyncStatus.IDLE) {
+        // 允许从 ERROR 状态恢复，但阻止其他忙碌状态
+        if (this.syncStatus !== SyncStatus.IDLE && this.syncStatus !== SyncStatus.ERROR) {
             return;
         }
         if (!this.cloudAdapter) {
@@ -452,10 +455,11 @@ export class SyncEngine {
     // 检查当前是否可以触发同步
     private canTriggerSync(): boolean {
         const isAutoSyncEnabled = this.options.autoSync?.enabled === true;
+        // 允许从 ERROR 状态恢复，但阻止正在进行的同步操作
         const canSync = Boolean(
             isAutoSyncEnabled &&
             this.cloudAdapter !== undefined &&
-            ![SyncStatus.ERROR, SyncStatus.UPLOADING, SyncStatus.DOWNLOADING].includes(this.syncStatus)
+            ![SyncStatus.UPLOADING, SyncStatus.DOWNLOADING, SyncStatus.CHECKING].includes(this.syncStatus)
         );
         return canSync;
     }
