@@ -184,7 +184,7 @@ export const listAllStoreItems = async (
         let allItems: SyncViewItem[] = [];
         let currentOffset: number | undefined = undefined;
         while (true) {
-            const result = await adapter.listStoreItems(storeName, currentOffset, 100, since);
+            const result = await adapter.listStoreItems(storeName, currentOffset, since);
             if (!result || !Array.isArray(result.items)) {
                 break;
             }
