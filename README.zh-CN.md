@@ -138,11 +138,10 @@ DeltaSync 采用基于版本的增量同步机制:
 2. **变更追踪**: 使用 `SyncView` 存储所有数据的最新版本信息，用于快速比对
 
 3. **同步模式**:
-   - **全量同步**: 使用 SyncView 比对本地和云端的所有数据
-   - **增量同步**: 使用检查点机制，仅同步自上次同步以来的变更
-   - **推送**: 将本地新版本数据推送到云端
-   - **拉取**: 拉取云端新版本数据到本地
-   - **冲突处理**: 采用"最新版本胜出"策略（更高的 `_ver` 获胜）
+   - **同步 (`sync`)**: 本地与云端各列举元数据 **一次**，用 `getRoundTripDiff` **一次**算出上传与拉取两个 diff，再**先推后拉**；结束时更新 checkpoint
+   - **增量**: `sync()` 默认用内部 `checkpoint` 作为 `since` 做 `listStoreItems`
+   - **全量列举**: 在适配器约定下可对 `sync(stores, 0)` 使用 `since === 0`
+   - **冲突处理**: 采用「最新版本胜出」策略（更高的 `_ver` 获胜）
 
 4. **墓碑机制**: 
    - 已删除的项目会被追踪在特殊的 `tombStones` 存储中
@@ -159,17 +158,11 @@ DeltaSync 采用基于版本的增量同步机制:
 ### 同步方法
 
 ```typescript
-// 全量同步（先拉取后推送）
-await engine.fullSync();
+// 同步：每边元数据各扫一次 + getRoundTripDiff 一次，再先推后拉
+await engine.sync();
 
-// 仅拉取远程更改（全量比对）
-await engine.pull();
-
-// 增量拉取（仅拉取自上次同步以来的变更）
-await engine.incrementalPull();
-
-// 仅推送本地更改
-await engine.push();
+// 可选：显式 store 与 since（例如适配器约定 since===0 表示全量列举）
+// await engine.sync(['notes', 'decks'], 0);
 ```
 
 ### 自定义同步选项

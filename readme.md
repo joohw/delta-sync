@@ -138,10 +138,9 @@ DeltaSync uses a version-based incremental synchronization mechanism:
 2. **Change Tracking**: Uses `SyncView` to store the latest version information of all data for fast comparison
 
 3. **Sync Modes**:
-   - **Full Sync**: Compare all data between local and cloud using SyncView
-   - **Incremental Sync**: Use checkpoint mechanism to only sync changes since last sync
-   - **Push**: Push local new version data to cloud
-   - **Pull**: Pull cloud new version data to local
+   - **Sync (`sync`)**: Loads local + cloud metadata **once each**, computes upload and pull diffs in one step (`getRoundTripDiff`), then **applies push then pull**; updates checkpoint once at end of the round
+   - **Incremental**: `sync()` uses internal `checkpoint` as `since` for `listStoreItems` (`_ver > since`)
+   - **Full listing**: Call `sync(stores, 0)` when your adapter treats `since === 0` as listing all changes (see adapter docs)
    - **Conflict Resolution**: Adopts "latest version wins" strategy (higher `_ver` wins)
 
 4. **Tombstone Mechanism**: 
@@ -159,17 +158,11 @@ DeltaSync uses a version-based incremental synchronization mechanism:
 ### Sync Methods
 
 ```typescript
-// Full sync (pull then push)
-await engine.fullSync();
+// Sync: one metadata pass per side + one combined diff (getRoundTripDiff), then push then pull
+await engine.sync();
 
-// Pull remote changes only (full comparison)
-await engine.pull();
-
-// Incremental pull (only changes since last sync)
-await engine.incrementalPull();
-
-// Push local changes only
-await engine.push();
+// Optional explicit store list / since (e.g. full listing when adapter uses `since === 0`)
+// await engine.sync(['notes', 'decks'], 0);
 ```
 
 ### Custom Sync Options

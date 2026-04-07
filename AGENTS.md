@@ -12,7 +12,7 @@ This file orients coding agents and contributors working in this repository.
 |------|------|
 | `index.ts` | Public exports (`types`, `SyncEngine`, `SyncView`, `option`, `clear`) |
 | `core/types.ts` | `DatabaseAdapter`, sync types, `SyncStatus`, tombstone store name |
-| `core/SyncEngine.ts` | Orchestration: save/delete, push/pull, full/incremental sync, timers |
+| `core/SyncEngine.ts` | Orchestration: save/delete, `sync` (push then pull, checkpoint), timers |
 | `core/SyncView.ts` | Lightweight view metadata and diffing for sync |
 | `core/sync.ts` | Applying diffs and changes to adapters |
 | `core/option.ts` | `SyncOptions` and defaults |

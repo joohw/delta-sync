@@ -7,7 +7,7 @@ import {
     SyncStatus,
     TOMBSTONE_STORE
 } from './types';
-import { getViewDiff } from './SyncView';
+import { getRoundTripDiff } from './SyncView';
 import { syncFromDiff, applyChangesToAdapter } from './sync';
 import { SyncOptions, createDefaultOptions } from './option';
 import { clearOldTombstones } from './clear';
@@ -21,9 +21,14 @@ export class SyncEngine {
     private options: SyncOptions;
     private syncStatus: SyncStatus = SyncStatus.OFFLINE;
     private isInitialized: boolean = false;
-    private pullTimer?: ReturnType<typeof setInterval>;
+    private syncTimer?: ReturnType<typeof setInterval>;
     private pushDebounceTimer?: ReturnType<typeof setTimeout>;
     private storesToSync: string[] = [];
+    /**
+     * 仅由 {@link sync} 在整轮「先推后拉」成功结束后，根据本轮应用的最大 `_ver` 更新。
+     * 作为默认 `since` 用于增量 `listStoreItems`（`_ver > since`）。
+     */
+    private checkpoint: number = 0;
 
 
     // 待同步的数据库更改
@@ -42,6 +47,28 @@ export class SyncEngine {
         this.localAdapter = localAdapter;
         this.options = createDefaultOptions(options);
         console.log(`Powered by Delta Sync ${packageJson.version}`);
+    }
+
+
+    getCheckpoint(): number {
+        return this.checkpoint;
+    }
+
+    /** Restore persisted checkpoint after restart (e.g. from last successful sync). */
+    setCheckpoint(value: number): void {
+        if (typeof value === 'number' && !Number.isNaN(value) && value >= 0) {
+            this.checkpoint = value;
+        }
+    }
+
+    private resolveSince(explicitSince?: number): number {
+        return explicitSince !== undefined ? explicitSince : this.checkpoint;
+    }
+
+    private advanceCheckpointFromSyncedVersion(version: number): void {
+        if (typeof version === 'number' && !Number.isNaN(version)) {
+            this.checkpoint = Math.max(this.checkpoint, version);
+        }
     }
 
 
@@ -150,14 +177,18 @@ export class SyncEngine {
 
 
 
-    // 拉取最新的云端数据,允许指定版本号
-    async pull(stores: string[] = this.storesToSync, since?: number,) {
+    /**
+     * 双向同步：本地与云端各 **list 一次** 元数据，{@link getRoundTripDiff} 一次得到上传/拉取两个 diff，再先推后拉。
+     * checkpoint **仅在本方法末尾**根据本轮应用的最大 `_ver` 更新一次。
+     * @param since 显式水位；省略则用内部 `checkpoint`。全量列举可用 `sync(stores, 0)`（视适配器对 `since` 的约定）。
+     */
+    async sync(stores: string[] = this.storesToSync, since?: number): Promise<void> {
         // 允许从 ERROR 状态恢复，但阻止其他忙碌状态
         if (this.syncStatus !== SyncStatus.IDLE && this.syncStatus !== SyncStatus.ERROR) {
-            console.warn('[DeltySync] Sync is busy, skip pull');
+            console.warn('[DeltySync] Sync is busy, skip sync');
             return;
         }
-        console.log('[DeltySync] Pulling data from cloud...')
+        console.log('[DeltySync] Syncing with cloud (push then pull)...');
         if (!this.cloudAdapter) {
             this.updateStatus(SyncStatus.OFFLINE);
             return;
@@ -166,95 +197,72 @@ export class SyncEngine {
             this.updateStatus(SyncStatus.ERROR);
             return;
         }
+        if (!await this.checkPushAvailable()) {
+            this.updateStatus(SyncStatus.ERROR);
+            return;
+        }
+        const syncSince = this.resolveSince(since);
+        let pullMaxVerInRound = 0;
+        const cloud = this.cloudAdapter;
         try {
             this.updateStatus(SyncStatus.CHECKING);
-            const diff = await getViewDiff(this.localAdapter, this.cloudAdapter, stores, since);
-            this.updateStatus(SyncStatus.DOWNLOADING);
-            await syncFromDiff(
-                this.cloudAdapter,
+            const { upload, pull } = await getRoundTripDiff(
                 this.localAdapter,
-                diff,
+                cloud,
+                stores,
+                syncSince
+            );
+            this.updateStatus(SyncStatus.UPLOADING);
+            await syncFromDiff(
+                this.localAdapter,
+                cloud,
+                upload,
                 {
                     batchSize: this.options.batchSize || 100,
                     onProgress: this.options.onSyncProgress,
-                    onChangesApplied: this.options.onChangePulled,
+                    onChangesApplied: this.options.onChangePushed,
                     onVersionUpdated: (version) => {
                         this.options.onVersionUpdate && this.options.onVersionUpdate(version);
                     }
                 }
             );
-            this.clearPendingChanges();
-            this.updateStatus(SyncStatus.IDLE);
-            return;
-        } catch (error) {
-            this.updateStatus(SyncStatus.ERROR);
-            console.error('[DeltySync] Pull failed:', error);
-            return;
-        }
-    }
-
-
-
-    async push(stores: string[] = this.storesToSync, since?: number) {
-        // 允许从 ERROR 状态恢复，但阻止其他忙碌状态
-        if (this.syncStatus !== SyncStatus.IDLE && this.syncStatus !== SyncStatus.ERROR) {
-            console.warn('[DeltySync] Sync is busy, skip push');
-            return;
-        }
-        console.log('[DeltySync] Pushing data to cloud...');
-        if (!this.cloudAdapter) {
-            this.updateStatus(SyncStatus.OFFLINE);
-            return
-        }
-        if (!await this.checkPushAvailable()) {
-            this.updateStatus(SyncStatus.ERROR);
-            return
-        }
-        try {
-            this.updateStatus(SyncStatus.CHECKING);
-            const diff = await getViewDiff(this.cloudAdapter, this.localAdapter, stores, since);
-            this.updateStatus(SyncStatus.UPLOADING);
+            if (!await this.checkPullAvailable()) {
+                this.updateStatus(SyncStatus.ERROR);
+                return;
+            }
+            this.updateStatus(SyncStatus.DOWNLOADING);
             await syncFromDiff(
+                cloud,
                 this.localAdapter,
-                this.cloudAdapter,
-                diff,
+                pull,
                 {
                     batchSize: this.options.batchSize || 100,
                     onProgress: this.options.onSyncProgress,
-                    onChangesApplied: this.options.onChangePushed,
+                    onChangesApplied: this.options.onChangePulled,
+                    onVersionUpdated: (version) => {
+                        pullMaxVerInRound = Math.max(pullMaxVerInRound, version);
+                        this.options.onVersionUpdate && this.options.onVersionUpdate(version);
+                    }
                 }
             );
+            if (pullMaxVerInRound > 0) {
+                this.advanceCheckpointFromSyncedVersion(pullMaxVerInRound);
+            }
             this.clearPendingChanges();
             this.updateStatus(SyncStatus.IDLE);
             return;
         } catch (error) {
             this.updateStatus(SyncStatus.ERROR);
-            console.error('[DeltySync] Push failed:', error);
-            return;
-        }
-    }
-
-
-
-    // 全量同步
-    async fullSync() {
-        if (!this.cloudAdapter) {
-            this.updateStatus(SyncStatus.OFFLINE);
-            return;
-        }
-        try {
-            await this.pull(this.storesToSync);
-            await this.push(this.storesToSync);
-        } catch (error) {
             console.error('[DeltySync] Sync failed:', error);
-            return
+            return;
         }
     }
+
 
 
     enableAutoSync(pullInterval?: number): void {
-        if (this.pullTimer) {
-            clearInterval(this.pullTimer);
+        if (this.syncTimer) {
+            clearInterval(this.syncTimer);
         }
         const currentAutoSync = this.options.autoSync || {};
         this.options.autoSync = {
@@ -263,17 +271,17 @@ export class SyncEngine {
             pullInterval: pullInterval || currentAutoSync.pullInterval || 30000000
         };
         this.options.autoSync.pullInterval;
-        this.pullTimer = setInterval(() => {
-            this.executePullTask();
+        this.syncTimer = setInterval(() => {
+            this.executeSyncTask();
         }, this.options.autoSync.pullInterval);
     }
 
 
 
     disableAutoSync(): void {
-        if (this.pullTimer) {
-            clearInterval(this.pullTimer);
-            this.pullTimer = undefined;
+        if (this.syncTimer) {
+            clearInterval(this.syncTimer);
+            this.syncTimer = undefined;
         }
         if (this.pushDebounceTimer) {
             clearTimeout(this.pushDebounceTimer);
@@ -287,7 +295,7 @@ export class SyncEngine {
     }
 
 
-    private async executePullTask(): Promise<void> {
+    private async executeSyncTask(): Promise<void> {
         // 允许从 ERROR 状态恢复，但阻止其他忙碌状态
         if (this.syncStatus !== SyncStatus.IDLE && this.syncStatus !== SyncStatus.ERROR) {
             return;
@@ -297,9 +305,9 @@ export class SyncEngine {
             return;
         }
         try {
-            await this.pull(this.storesToSync);
+            await this.sync(this.storesToSync);
         } catch (error) {
-            console.error('[DeltySync] Pull task failed:', error);
+            console.error('[DeltySync] Scheduled sync failed:', error);
         }
     }
 
@@ -523,6 +531,7 @@ export class SyncEngine {
         this.syncStatus = SyncStatus.OFFLINE;
         this.isInitialized = false;
         this.cloudAdapter = undefined;
+        this.checkpoint = 0;
     }
 
 }

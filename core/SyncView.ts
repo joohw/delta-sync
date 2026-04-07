@@ -180,13 +180,13 @@ export const listAllStoreItems = async (
     storeName: string,
     since?: number,
 ): Promise<SyncViewItem[]> => {
+    let allItems: SyncViewItem[] = [];
+    let currentOffset: number | undefined = undefined;
     try {
-        let allItems: SyncViewItem[] = [];
-        let currentOffset: number | undefined = undefined;
         while (true) {
             const result = await adapter.listStoreItems(storeName, currentOffset, since);
             if (!result || !Array.isArray(result.items)) {
-                break;
+                throw new Error(`Invalid listStoreItems result for store ${storeName}`);
             }
             allItems = allItems.concat(result.items);
             if (!result.hasMore || result.offset === undefined) {
@@ -197,7 +197,7 @@ export const listAllStoreItems = async (
         return allItems;
     } catch (error) {
         console.error(`[getSyncViewFromAdapter] Failed to read all data from store ${storeName}:`, error);
-        return [];
+        throw error;
     }
 }
 
@@ -220,6 +220,31 @@ export const getViewDiff = async (
             toDownload: [],
             toDelete: []
         };
+    }
+}
+
+
+/**
+ * 本地与云端各只列举一次元数据，再在内存中算出上传视图与拉取视图（等价于原先两次 getViewDiff，但不再重复 listStoreItems）。
+ * - `upload`: `diffViews(cloudView, localView)` → 先推阶段 `syncFromDiff(local, cloud, upload)`
+ * - `pull`: `diffViews(localView, cloudView)` → 后拉阶段 `syncFromDiff(cloud, local, pull)`
+ */
+export const getRoundTripDiff = async (
+    localAdapter: DatabaseAdapter,
+    cloudAdapter: DatabaseAdapter,
+    stores: string[],
+    since?: number,
+): Promise<{ upload: ViewDiff; pull: ViewDiff }> => {
+    try {
+        const localView = await getSyncViewFromAdapter(localAdapter, stores, since);
+        const cloudView = await getSyncViewFromAdapter(cloudAdapter, stores, since);
+        return {
+            upload: SyncView.diffViews(cloudView, localView),
+            pull: SyncView.diffViews(localView, cloudView),
+        };
+    } catch (error) {
+        console.error('[getRoundTripDiff] Failed to calculate round-trip diff:', error);
+        throw error;
     }
 }
 
